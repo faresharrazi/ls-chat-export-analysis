@@ -239,11 +239,7 @@ with st.sidebar:
     fetch_button = st.button("Fetch chat messages", type="primary")
 
     st.header("Analysis")
-    api_analysis_key = st.text_input(
-        "API key",
-        value=os.getenv("OPENAI_API_KEY", ""),
-        type="password",
-    )
+    api_analysis_key = st.secrets.get("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY", ""))
     output_language_label = st.radio(
         "Model output language",
         options=list(OUTPUT_LANGUAGE_MAP.keys()),
