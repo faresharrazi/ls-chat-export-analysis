@@ -11,6 +11,7 @@ import altair as alt
 import pandas as pd
 import requests
 import streamlit as st
+from streamlit.errors import StreamlitSecretNotFoundError
 
 API_BASE = "https://api.livestorm.co/v1"
 OPENAI_CHAT_COMPLETIONS_URL = "https://api.openai.com/v1/chat/completions"
@@ -49,6 +50,13 @@ def load_env_file(path: Path = ENV_PATH) -> None:
 
 
 load_env_file()
+
+
+def get_runtime_secret(name: str, default: str = "") -> str:
+    try:
+        return st.secrets.get(name, os.getenv(name, default))
+    except StreamlitSecretNotFoundError:
+        return os.getenv(name, default)
 
 
 page_config = {"page_title": "Livestorm Chat Export/Analysis", "layout": "wide"}
@@ -239,7 +247,7 @@ with st.sidebar:
     fetch_button = st.button("Fetch chat messages", type="primary")
 
     st.header("Analysis")
-    api_analysis_key = st.secrets.get("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY", ""))
+    api_analysis_key = get_runtime_secret("OPENAI_API_KEY", "")
     output_language_label = st.radio(
         "Model output language",
         options=list(OUTPUT_LANGUAGE_MAP.keys()),
