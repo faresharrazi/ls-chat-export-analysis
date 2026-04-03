@@ -98,6 +98,15 @@ def apply_brand_styles() -> None:
             var(--ls-bg);
         }
 
+        /* Hide Streamlit top chrome (toolbar/menu/decoration) */
+        #MainMenu,
+        header[data-testid="stHeader"],
+        [data-testid="stToolbar"],
+        [data-testid="stDecoration"],
+        [data-testid="stStatusWidget"] {
+          display: none !important;
+        }
+
         [data-testid="stAppViewContainer"] [data-testid="stMainBlockContainer"],
         [data-testid="stAppViewContainer"] [data-testid="stMainBlockContainer"] p,
         [data-testid="stAppViewContainer"] [data-testid="stMainBlockContainer"] span,
@@ -105,6 +114,10 @@ def apply_brand_styles() -> None:
         [data-testid="stAppViewContainer"] [data-testid="stMainBlockContainer"] li,
         [data-testid="stAppViewContainer"] [data-testid="stMainBlockContainer"] div {
           color: var(--ls-text);
+        }
+
+        [data-testid="stAppViewContainer"] [data-testid="stMainBlockContainer"] {
+          padding-top: 0rem;
         }
 
         h1, h2, h3 {
@@ -239,119 +252,164 @@ else:
 
 has_fetched_content = st.session_state.get("chat_df") is not None
 
-if not has_fetched_content:
-    st.write(
-        "Fetch chat messages and questions for a Livestorm session, export as CSV, and optionally run analysis."
-    )
-    st.markdown(
-        "1. Add your Livestorm API key "
-        "([How to access the Public API panel](https://support.livestorm.co/article/321-access-public-api-panel))\n"
-        "2. Choose whether you want to fetch by Session ID or Event ID.\n"
-        "3. Add the Session ID "
-        "([How to copy the Session ID](https://support.livestorm.co/article/247-id#copy-the-session-id)) "
-        "or add the Event ID "
-        "([How to copy the Event ID](https://support.livestorm.co/article/247-id#copy-the-event-id))."
-    )
+if "show_controls_panel" not in st.session_state:
+    st.session_state["show_controls_panel"] = True
+if "analysis_in_progress" not in st.session_state:
+    st.session_state["analysis_in_progress"] = False
 
-with st.sidebar:
-    st.header("Connection")
-    api_key = st.text_input(
-        "Livestorm API key",
-        value=os.getenv("LS_API_KEY", ""),
-        type="password",
-        help="Your Livestorm API key",
-    )
-    has_api_key = bool(api_key.strip())
-    input_mode = st.radio(
-        "Input type",
-        options=INPUT_MODE_OPTIONS,
-        index=0,
-        horizontal=True,
-        disabled=not has_api_key,
-    )
+show_controls_panel = st.session_state.get("show_controls_panel", True)
+controls_col = None
+if show_controls_panel:
+    controls_col, main_col = st.columns([0.95, 3.05], gap="large")
+else:
+    show_col, main_col = st.columns([0.35, 3.65], gap="large")
+    with show_col:
+        if st.button("Show Panel", key="show_controls_panel_btn"):
+            st.session_state["show_controls_panel"] = True
+            st.rerun()
 
-    session_id = ""
-    event_id = ""
-    session_id_valid = False
-    event_id_valid = False
-    load_event_sessions_button = False
-    selected_session_from_event = None
+analyze_button = False
+output_language_label = "English"
+api_key = st.session_state.get("api_key_input", os.getenv("LS_API_KEY", ""))
+has_api_key = bool(str(api_key).strip())
+input_mode = st.session_state.get("input_mode", INPUT_MODE_OPTIONS[0])
+session_id = st.session_state.get("session_id_input", "")
+event_id = st.session_state.get("event_id_input", "")
+session_id_valid = bool(SESSION_ID_PATTERN.match(str(session_id).strip()))
+event_id_valid = bool(EVENT_ID_PATTERN.match(str(event_id).strip()))
+load_event_sessions_button = False
+selected_session_from_event = st.session_state.get("selected_event_session_id")
+fetch_button = False
+api_analysis_key = get_runtime_secret("OPENAI_API_KEY", "")
 
-    if input_mode == "Session ID":
-        session_id = st.text_input(
-            "Session ID",
-            help="Livestorm session ID",
+if controls_col is not None:
+    with controls_col:
+        if st.button("Hide Panel", key="hide_controls_panel_btn"):
+            st.session_state["show_controls_panel"] = False
+            st.rerun()
+        st.subheader("Connection")
+        api_key = st.text_input(
+            "Livestorm API key",
+            value=os.getenv("LS_API_KEY", ""),
+            type="password",
+            help="Your Livestorm API key",
+            key="api_key_input",
+        )
+        has_api_key = bool(api_key.strip())
+        input_mode = st.radio(
+            "Input type",
+            options=INPUT_MODE_OPTIONS,
+            index=0 if st.session_state.get("input_mode", INPUT_MODE_OPTIONS[0]) == INPUT_MODE_OPTIONS[0] else 1,
+            horizontal=True,
             disabled=not has_api_key,
-            key="session_id_input",
-        )
-        session_id_valid = bool(SESSION_ID_PATTERN.match(session_id.strip()))
-    else:
-        event_id = st.text_input(
-            "Event ID",
-            help="Livestorm event ID",
-            disabled=not has_api_key,
-            key="event_id_input",
-        )
-        event_id_valid = bool(EVENT_ID_PATTERN.match(event_id.strip()))
-        load_event_sessions_button = st.button(
-            "Load Past Sessions",
-            disabled=not (has_api_key and event_id_valid),
+            key="input_mode",
         )
 
-        event_sessions = st.session_state.get("event_sessions", [])
-        event_sessions_for = st.session_state.get("event_sessions_for", "")
-        if event_sessions_for == event_id.strip() and event_sessions:
-            options = [item["id"] for item in event_sessions if isinstance(item, dict) and "id" in item]
-            session_labels = {
-                item["id"]: item.get("label", item["id"])
-                for item in event_sessions
-                if isinstance(item, dict) and "id" in item
-            }
-            selected_session_from_event = st.selectbox(
-                "Select a past session",
-                options=options,
-                format_func=lambda sid: session_labels.get(sid, sid),
-                disabled=not bool(options),
-                key="selected_event_session_id",
+        session_id = ""
+        event_id = ""
+        session_id_valid = False
+        event_id_valid = False
+        load_event_sessions_button = False
+        selected_session_from_event = None
+
+        if input_mode == "Session ID":
+            session_id = st.text_input(
+                "Session ID",
+                help="Livestorm session ID",
+                disabled=not has_api_key,
+                key="session_id_input",
             )
-            if selected_session_from_event:
-                st.caption(f"Selected session: `{selected_session_from_event}`")
+            session_id_valid = bool(SESSION_ID_PATTERN.match(session_id.strip()))
+        else:
+            event_id = st.text_input(
+                "Event ID",
+                help="Livestorm event ID",
+                disabled=not has_api_key,
+                key="event_id_input",
+            )
+            event_id_valid = bool(EVENT_ID_PATTERN.match(event_id.strip()))
+            load_event_sessions_button = st.button(
+                "Load Past Sessions",
+                disabled=not (has_api_key and event_id_valid),
+            )
 
-    active_session_id = session_id.strip()
-    if input_mode == "Event ID":
-        active_session_id = selected_session_from_event or ""
+            event_sessions = st.session_state.get("event_sessions", [])
+            event_sessions_for = st.session_state.get("event_sessions_for", "")
+            if event_sessions_for == event_id.strip() and event_sessions:
+                options = [item["id"] for item in event_sessions if isinstance(item, dict) and "id" in item]
+                session_labels = {
+                    item["id"]: item.get("label", item["id"])
+                    for item in event_sessions
+                    if isinstance(item, dict) and "id" in item
+                }
+                selected_session_from_event = st.selectbox(
+                    "Select a past session",
+                    options=options,
+                    format_func=lambda sid: session_labels.get(sid, sid),
+                    disabled=not bool(options),
+                    key="selected_event_session_id",
+                )
+                if selected_session_from_event:
+                    st.caption(f"Selected session: `{selected_session_from_event}`")
 
-    fetch_disabled = not has_api_key
-    if input_mode == "Session ID":
-        fetch_disabled = fetch_disabled or (not session_id_valid)
-    else:
-        fetch_disabled = fetch_disabled or (not bool(active_session_id))
+        active_session_id = session_id.strip()
+        if input_mode == "Event ID":
+            active_session_id = selected_session_from_event or ""
 
-    fetch_button = st.button(
-        "Fetch Chat & Questions",
-        type="primary",
-        disabled=fetch_disabled,
-    )
-    if not has_api_key:
-        st.caption("Add a Livestorm API key to enable ID inputs.")
-    elif input_mode == "Session ID" and session_id and not session_id_valid:
-        st.caption("Session ID must be a valid UUID format.")
-    elif input_mode == "Event ID" and event_id and not event_id_valid:
-        st.caption("Event ID must be a valid UUID format.")
-    elif input_mode == "Event ID" and event_id_valid and not active_session_id:
-        st.caption("Load past sessions, then select one session before fetching.")
+        fetch_disabled = not has_api_key
+        if input_mode == "Session ID":
+            fetch_disabled = fetch_disabled or (not session_id_valid)
+        else:
+            fetch_disabled = fetch_disabled or (not bool(active_session_id))
 
-    st.header("Analysis")
-    api_analysis_key = get_runtime_secret("OPENAI_API_KEY", "")
-    output_language_label = st.radio(
-        "Model output language",
-        options=list(OUTPUT_LANGUAGE_MAP.keys()),
-        index=0,
-        horizontal=True,
-        format_func=lambda lang: OUTPUT_LANGUAGE_LABELS.get(lang, lang),
-        disabled=not has_fetched_content,
-    )
-    analyze_button = st.button("Run analysis", disabled=not has_fetched_content)
+        fetch_button = st.button(
+            "Fetch Chat & Questions",
+            type="primary",
+            disabled=fetch_disabled,
+        )
+        if not has_api_key:
+            st.caption("Add a Livestorm API key to enable ID inputs.")
+        elif input_mode == "Session ID" and session_id and not session_id_valid:
+            st.caption("Session ID must be a valid UUID format.")
+        elif input_mode == "Event ID" and event_id and not event_id_valid:
+            st.caption("Event ID must be a valid UUID format.")
+        elif input_mode == "Event ID" and event_id_valid and not active_session_id:
+            st.caption("Load past sessions, then select one session before fetching.")
+
+        api_analysis_key = get_runtime_secret("OPENAI_API_KEY", "")
+        if has_fetched_content:
+            st.subheader("Analysis")
+            output_language_label = st.radio(
+                "Model output language",
+                options=list(OUTPUT_LANGUAGE_MAP.keys()),
+                index=0,
+                horizontal=True,
+                format_func=lambda lang: OUTPUT_LANGUAGE_LABELS.get(lang, lang),
+                key="analysis_language",
+            )
+            analysis_btn_placeholder = st.empty()
+            if st.session_state.get("analysis_in_progress", False):
+                analysis_btn_placeholder.button("Running analysis...", disabled=True, key="analysis_running_btn")
+                analyze_button = False
+            else:
+                analyze_button = analysis_btn_placeholder.button("Run analysis", key="analysis_run_btn")
+
+if input_mode == "Session ID":
+    active_session_id = str(session_id).strip()
+else:
+    active_session_id = selected_session_from_event or ""
+
+with main_col:
+    if not has_fetched_content:
+        st.markdown(
+            "1. Add your Livestorm API key "
+            "([How to access the Public API panel](https://support.livestorm.co/article/321-access-public-api-panel))\n"
+            "2. Choose whether you want to fetch by Session ID or Event ID.\n"
+            "3. Add the Session ID "
+            "([How to copy the Session ID](https://support.livestorm.co/article/247-id#copy-the-session-id)) "
+            "or add the Event ID "
+            "([How to copy the Event ID](https://support.livestorm.co/article/247-id#copy-the-event-id))."
+        )
 
 
 def build_headers(key: str) -> Dict[str, str]:
@@ -1366,36 +1424,46 @@ if fetch_button:
             st.rerun()
 
 if analyze_button:
+    st.session_state["analysis_in_progress"] = True
+    st.rerun()
+
+if st.session_state.get("analysis_in_progress", False):
     payload = st.session_state.get("chat_payload")
     df = st.session_state.get("chat_df")
     questions_payload = st.session_state.get("questions_payload")
     questions_df = st.session_state.get("questions_df")
+    selected_output_language = st.session_state.get("analysis_language", output_language_label)
     if payload is None or df is None:
         st.warning("No fetched messages found. Click 'Fetch Chat & Questions' first.")
+        st.session_state["analysis_in_progress"] = False
+        st.rerun()
     elif not api_analysis_key:
         st.warning("Analysis skipped: missing API key in environment.")
+        st.session_state["analysis_in_progress"] = False
+        st.rerun()
     else:
-        with st.spinner("Running analysis..."):
-            prompt_text = load_analysis_prompt()
-            derived_stats = build_derived_stats(df, questions_df=questions_df)
-            try:
-                analysis_md = analyze_with_openai(
-                    api_key=api_analysis_key,
-                    model=DEFAULT_OPENAI_MODEL,
-                    system_prompt=prompt_text,
-                    output_language=OUTPUT_LANGUAGE_MAP[output_language_label],
-                    raw_payload=payload,
-                    derived_stats=derived_stats,
-                    questions_payload=questions_payload,
-                )
-            except requests.HTTPError as exc:
-                st.error(f"Analysis API error: {exc}")
-                analysis_md = ""
-            except requests.RequestException as exc:
-                st.error(f"Analysis network error: {exc}")
-                analysis_md = ""
+        prompt_text = load_analysis_prompt()
+        derived_stats = build_derived_stats(df, questions_df=questions_df)
+        try:
+            analysis_md = analyze_with_openai(
+                api_key=api_analysis_key,
+                model=DEFAULT_OPENAI_MODEL,
+                system_prompt=prompt_text,
+                output_language=OUTPUT_LANGUAGE_MAP[selected_output_language],
+                raw_payload=payload,
+                derived_stats=derived_stats,
+                questions_payload=questions_payload,
+            )
+        except requests.HTTPError as exc:
+            st.error(f"Analysis API error: {exc}")
+            analysis_md = ""
+        except requests.RequestException as exc:
+            st.error(f"Analysis network error: {exc}")
+            analysis_md = ""
         st.session_state["analysis_md"] = analysis_md
         st.session_state["analysis_ran"] = True
+        st.session_state["analysis_in_progress"] = False
+        st.rerun()
 
 payload = st.session_state.get("chat_payload")
 df = st.session_state.get("chat_df")
@@ -1405,48 +1473,49 @@ questions_payload = st.session_state.get("questions_payload")
 questions_df = st.session_state.get("questions_df")
 current_session_id = st.session_state.get("current_session_id") or active_session_id
 
-if payload is not None and df is not None:
-    render_visual_dashboard(df, questions_df=questions_df)
+with main_col:
+    if payload is not None and df is not None:
+        render_visual_dashboard(df, questions_df=questions_df)
 
-    if analysis_ran and analysis_md:
-        st.subheader("Chat Analysis")
-        st.markdown(analysis_md)
+        if analysis_ran and analysis_md:
+            st.subheader("Chat Analysis")
+            st.markdown(analysis_md)
 
-        analysis_bytes = analysis_md.encode("utf-8")
-        analysis_ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+            analysis_bytes = analysis_md.encode("utf-8")
+            analysis_ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+            st.download_button(
+                label="Download Analysis (Markdown)",
+                data=analysis_bytes,
+                file_name=f"livestorm-analysis-{current_session_id}-{analysis_ts}.md",
+                mime="text/markdown",
+            )
+
+        st.subheader("Chat messages")
+        st.dataframe(df, use_container_width=True)
+
+        timestamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+        csv_bytes = df.to_csv(index=False).encode("utf-8")
+
         st.download_button(
-            label="Download Analysis (Markdown)",
-            data=analysis_bytes,
-            file_name=f"livestorm-analysis-{current_session_id}-{analysis_ts}.md",
-            mime="text/markdown",
-        )
-
-    st.subheader("Chat messages")
-    st.dataframe(df, use_container_width=True)
-
-    timestamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
-    csv_bytes = df.to_csv(index=False).encode("utf-8")
-
-    st.download_button(
-        label="Download CSV",
-        data=csv_bytes,
-        file_name=f"livestorm-chat-{current_session_id}-{timestamp}.csv",
-        mime="text/csv",
-    )
-
-    if isinstance(questions_df, pd.DataFrame) and not questions_df.empty:
-        st.subheader("Questions")
-        st.dataframe(questions_df, use_container_width=True)
-        questions_csv_bytes = questions_df.to_csv(index=False).encode("utf-8")
-        questions_timestamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
-        st.download_button(
-            label="Download Questions CSV",
-            data=questions_csv_bytes,
-            file_name=f"livestorm-questions-{current_session_id}-{questions_timestamp}.csv",
+            label="Download CSV",
+            data=csv_bytes,
+            file_name=f"livestorm-chat-{current_session_id}-{timestamp}.csv",
             mime="text/csv",
         )
-    elif isinstance(questions_df, pd.DataFrame) and questions_df.empty:
-        st.info(
-            "No questions were found for this session. "
-            "This can happen when attendees did not submit questions or the session has no Q&A data."
-        )
+
+        if isinstance(questions_df, pd.DataFrame) and not questions_df.empty:
+            st.subheader("Questions")
+            st.dataframe(questions_df, use_container_width=True)
+            questions_csv_bytes = questions_df.to_csv(index=False).encode("utf-8")
+            questions_timestamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+            st.download_button(
+                label="Download Questions CSV",
+                data=questions_csv_bytes,
+                file_name=f"livestorm-questions-{current_session_id}-{questions_timestamp}.csv",
+                mime="text/csv",
+            )
+        elif isinstance(questions_df, pd.DataFrame) and questions_df.empty:
+            st.info(
+                "No questions were found for this session. "
+                "This can happen when attendees did not submit questions or the session has no Q&A data."
+            )
