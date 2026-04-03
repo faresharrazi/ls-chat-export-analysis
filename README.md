@@ -2,7 +2,9 @@
 
 Streamlit app to:
 - Fetch Livestorm session chat messages (with pagination)
+- Fetch Livestorm session questions (with pagination)
 - Clean and export messages as CSV
+- Export questions as CSV
 - Run OpenAI analysis over the full raw JSON response
 
 ## Quickstart
@@ -16,13 +18,15 @@ streamlit run app.py
 
 ## OpenAI Analysis
 
-1. Paste your OpenAI API key in the sidebar.
+1. Set `OPENAI_API_KEY` in environment/secrets.
 2. Click `Fetch chat messages`.
-3. Click `Run analysis`.
+3. (Optional) Click `Fetch questions`.
+4. Click `Run analysis`.
 
 The analysis sends:
 - `raw_api_response` (full fetched JSON)
 - `derived_stats` (quick computed metrics)
+- `questions_api_response` (when questions are fetched first)
 
 and renders markdown analysis in the UI.
 

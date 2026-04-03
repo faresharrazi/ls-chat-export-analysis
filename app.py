@@ -31,6 +31,11 @@ OUTPUT_LANGUAGE_LABELS = {
     "English": "🇬🇧 English",
     "French": "🇫🇷 Français",
 }
+INPUT_MODE_OPTIONS = ["Session ID", "Event ID"]
+SESSION_ID_PATTERN = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+EVENT_ID_PATTERN = SESSION_ID_PATTERN
 
 
 def load_env_file(path: Path = ENV_PATH) -> None:
@@ -59,7 +64,7 @@ def get_runtime_secret(name: str, default: str = "") -> str:
         return os.getenv(name, default)
 
 
-page_config = {"page_title": "Livestorm Chat Export/Analysis", "layout": "wide"}
+page_config = {"page_title": "Livestorm Chat & Questions Export/Analysis", "layout": "wide"}
 if ICON_PATH.exists():
     page_config["page_icon"] = str(ICON_PATH)
 st.set_page_config(**page_config)
@@ -111,6 +116,8 @@ def apply_brand_styles() -> None:
         [data-testid="stSidebar"] {
           background: linear-gradient(180deg, #12262B 0%, #1A353C 100%);
           border-right: 1px solid rgba(255,255,255,0.12);
+          min-width: 440px !important;
+          max-width: 440px !important;
         }
 
         [data-testid="stSidebar"] h1,
@@ -221,19 +228,30 @@ if HEADER_ICON_PATH.exists():
         <div style="display:flex; align-items:center; gap:12px; margin:0.2rem 0 0.6rem 0;">
           <img src="data:image/png;base64,{header_icon_b64}" style="width:42px; height:42px; object-fit:contain;" />
           <h1 style="margin:0; color:#FFFFFF; font-family:'Space Grotesk','IBM Plex Sans',sans-serif; letter-spacing:-0.02em;">
-            Livestorm Chat Export/Analysis
+            Livestorm Chat & Questions Export/Analysis
           </h1>
         </div>
         """,
         unsafe_allow_html=True,
     )
 else:
-    st.title("Livestorm Chat Export/Analysis")
+    st.title("Livestorm Chat & Questions Export/Analysis")
 
-st.write(
-    "Fetch chat messages for a Livestorm session, export as CSV, and optionally run a "
-    "chat analysis."
-)
+has_fetched_content = st.session_state.get("chat_df") is not None
+
+if not has_fetched_content:
+    st.write(
+        "Fetch chat messages and questions for a Livestorm session, export as CSV, and optionally run analysis."
+    )
+    st.markdown(
+        "1. Add your Livestorm API key "
+        "([How to access the Public API panel](https://support.livestorm.co/article/321-access-public-api-panel))\n"
+        "2. Choose whether you want to fetch by Session ID or Event ID.\n"
+        "3. Add the Session ID "
+        "([How to copy the Session ID](https://support.livestorm.co/article/247-id#copy-the-session-id)) "
+        "or add the Event ID "
+        "([How to copy the Event ID](https://support.livestorm.co/article/247-id#copy-the-event-id))."
+    )
 
 with st.sidebar:
     st.header("Connection")
@@ -243,8 +261,85 @@ with st.sidebar:
         type="password",
         help="Your Livestorm API key",
     )
-    session_id = st.text_input("Session ID", help="Livestorm session ID")
-    fetch_button = st.button("Fetch chat messages", type="primary")
+    has_api_key = bool(api_key.strip())
+    input_mode = st.radio(
+        "Input type",
+        options=INPUT_MODE_OPTIONS,
+        index=0,
+        horizontal=True,
+        disabled=not has_api_key,
+    )
+
+    session_id = ""
+    event_id = ""
+    session_id_valid = False
+    event_id_valid = False
+    load_event_sessions_button = False
+    selected_session_from_event = None
+
+    if input_mode == "Session ID":
+        session_id = st.text_input(
+            "Session ID",
+            help="Livestorm session ID",
+            disabled=not has_api_key,
+            key="session_id_input",
+        )
+        session_id_valid = bool(SESSION_ID_PATTERN.match(session_id.strip()))
+    else:
+        event_id = st.text_input(
+            "Event ID",
+            help="Livestorm event ID",
+            disabled=not has_api_key,
+            key="event_id_input",
+        )
+        event_id_valid = bool(EVENT_ID_PATTERN.match(event_id.strip()))
+        load_event_sessions_button = st.button(
+            "Load Past Sessions",
+            disabled=not (has_api_key and event_id_valid),
+        )
+
+        event_sessions = st.session_state.get("event_sessions", [])
+        event_sessions_for = st.session_state.get("event_sessions_for", "")
+        if event_sessions_for == event_id.strip() and event_sessions:
+            options = [item["id"] for item in event_sessions if isinstance(item, dict) and "id" in item]
+            session_labels = {
+                item["id"]: item.get("label", item["id"])
+                for item in event_sessions
+                if isinstance(item, dict) and "id" in item
+            }
+            selected_session_from_event = st.selectbox(
+                "Select a past session",
+                options=options,
+                format_func=lambda sid: session_labels.get(sid, sid),
+                disabled=not bool(options),
+                key="selected_event_session_id",
+            )
+            if selected_session_from_event:
+                st.caption(f"Selected session: `{selected_session_from_event}`")
+
+    active_session_id = session_id.strip()
+    if input_mode == "Event ID":
+        active_session_id = selected_session_from_event or ""
+
+    fetch_disabled = not has_api_key
+    if input_mode == "Session ID":
+        fetch_disabled = fetch_disabled or (not session_id_valid)
+    else:
+        fetch_disabled = fetch_disabled or (not bool(active_session_id))
+
+    fetch_button = st.button(
+        "Fetch Chat & Questions",
+        type="primary",
+        disabled=fetch_disabled,
+    )
+    if not has_api_key:
+        st.caption("Add a Livestorm API key to enable ID inputs.")
+    elif input_mode == "Session ID" and session_id and not session_id_valid:
+        st.caption("Session ID must be a valid UUID format.")
+    elif input_mode == "Event ID" and event_id and not event_id_valid:
+        st.caption("Event ID must be a valid UUID format.")
+    elif input_mode == "Event ID" and event_id_valid and not active_session_id:
+        st.caption("Load past sessions, then select one session before fetching.")
 
     st.header("Analysis")
     api_analysis_key = get_runtime_secret("OPENAI_API_KEY", "")
@@ -254,8 +349,9 @@ with st.sidebar:
         index=0,
         horizontal=True,
         format_func=lambda lang: OUTPUT_LANGUAGE_LABELS.get(lang, lang),
+        disabled=not has_fetched_content,
     )
-    analyze_button = st.button("Run analysis")
+    analyze_button = st.button("Run analysis", disabled=not has_fetched_content)
 
 
 def build_headers(key: str) -> Dict[str, str]:
@@ -265,12 +361,147 @@ def build_headers(key: str) -> Dict[str, str]:
     }
 
 
+def format_livestorm_http_error(exc: requests.HTTPError, resource_label: str) -> str:
+    response = exc.response
+    status_code = response.status_code if response is not None else None
+
+    details = ""
+    if response is not None:
+        try:
+            payload = response.json()
+            if isinstance(payload, dict):
+                if isinstance(payload.get("error"), str):
+                    details = payload["error"]
+                elif isinstance(payload.get("message"), str):
+                    details = payload["message"]
+        except ValueError:
+            details = ""
+
+    if status_code == 400:
+        return (
+            f"{resource_label} request is invalid (HTTP 400). "
+            "Please verify the provided ID and request parameters."
+        )
+    if status_code in (401, 403):
+        return (
+            f"{resource_label} request was unauthorized (HTTP {status_code}). "
+            "Please check your Livestorm API key permissions."
+        )
+    if status_code == 404:
+        return (
+            "Resource not found (HTTP 404). "
+            "Please verify the provided Session ID/Event ID exists in your Livestorm workspace."
+        )
+    if status_code == 429:
+        return (
+            f"{resource_label} rate limited (HTTP 429). "
+            "Please wait a few seconds and try again."
+        )
+    if status_code is not None and status_code >= 500:
+        return (
+            f"Livestorm server error while fetching {resource_label.lower()} (HTTP {status_code}). "
+            "Please retry shortly."
+        )
+
+    if details:
+        return f"{resource_label} API request failed (HTTP {status_code}): {details}"
+    if status_code is not None:
+        return f"{resource_label} API request failed (HTTP {status_code})."
+    return f"{resource_label} API request failed."
+
+
 def extract_messages(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     if isinstance(payload, dict) and isinstance(payload.get("data"), list):
         return payload["data"]
     if isinstance(payload, list):
         return payload
     return []
+
+
+def extract_questions(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    if isinstance(payload, dict) and isinstance(payload.get("data"), list):
+        return payload["data"]
+    if isinstance(payload, list):
+        return payload
+    return []
+
+
+def extract_sessions(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    if isinstance(payload, dict) and isinstance(payload.get("data"), list):
+        return payload["data"]
+    if isinstance(payload, list):
+        return payload
+    return []
+
+
+def _format_unix_label(value: Any) -> str:
+    try:
+        if value in (None, "", 0):
+            return "n/a"
+        ts = pd.to_datetime(value, unit="s", utc=True, errors="coerce")
+        if pd.isna(ts):
+            return "n/a"
+        return ts.strftime("%Y-%m-%d %H:%M UTC")
+    except (TypeError, ValueError):
+        return "n/a"
+
+
+def build_event_session_options(payload: Dict[str, Any]) -> List[Dict[str, str]]:
+    session_items = extract_sessions(payload)
+    options: List[Dict[str, str]] = []
+    sortable: List[Dict[str, Any]] = []
+    for item in session_items:
+        if not isinstance(item, dict):
+            continue
+        session_id = str(item.get("id") or "").strip()
+        if not session_id:
+            continue
+        attrs = item.get("attributes")
+        attrs = attrs if isinstance(attrs, dict) else {}
+        started_at = attrs.get("started_at") or attrs.get("estimated_started_at") or 0
+        sortable.append({"id": session_id, "attributes": attrs, "started_at": started_at})
+
+    sortable.sort(key=lambda row: row.get("started_at") or 0, reverse=True)
+    for row in sortable:
+        session_id = row["id"]
+        attrs = row["attributes"]
+        name = str(attrs.get("name") or "").strip()
+        attendees = attrs.get("attendees_count", "n/a")
+        started_label = _format_unix_label(attrs.get("started_at") or attrs.get("estimated_started_at"))
+        title = name if name else "Untitled session"
+        label = f"{started_label} - {title} ({attendees} attendees)"
+        options.append({"id": session_id, "label": label})
+
+    return options
+
+
+def extract_included_people(payload: Dict[str, Any]) -> Dict[str, str]:
+    people_lookup: Dict[str, str] = {}
+    if not isinstance(payload, dict):
+        return people_lookup
+
+    included = payload.get("included")
+    if not isinstance(included, list):
+        return people_lookup
+
+    for item in included:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") != "people":
+            continue
+        person_id = str(item.get("id") or "").strip()
+        if not person_id:
+            continue
+        attrs = item.get("attributes")
+        if not isinstance(attrs, dict):
+            people_lookup[person_id] = person_id
+            continue
+        first_name = str(attrs.get("first_name") or "").strip()
+        last_name = str(attrs.get("last_name") or "").strip()
+        full_name = f"{first_name} {last_name}".strip()
+        people_lookup[person_id] = full_name or person_id
+
+    return people_lookup
 
 
 def _extract_pagination(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -342,6 +573,25 @@ def flatten_message(msg: Dict[str, Any]) -> Dict[str, Any]:
     return base
 
 
+def flatten_question(question: Dict[str, Any], people_lookup: Dict[str, str]) -> Dict[str, Any]:
+    base: Dict[str, Any] = {}
+    if not isinstance(question, dict):
+        return base
+
+    base.update({"id": question.get("id"), "type": question.get("type")})
+
+    attrs = question.get("attributes")
+    if isinstance(attrs, dict):
+        for k, v in attrs.items():
+            base[k] = v
+
+    asker_id = str(base.get("question_author_id") or "").strip()
+    responder_id = str(base.get("response_author_id") or "").strip()
+    base["asked_by"] = people_lookup.get(asker_id, asker_id) if asker_id else None
+    base["answered_by"] = people_lookup.get(responder_id, responder_id) if responder_id else None
+    return base
+
+
 def clean_table_headers(df: pd.DataFrame) -> pd.DataFrame:
     cleaned = df.copy()
     cleaned.columns = [
@@ -352,7 +602,7 @@ def clean_table_headers(df: pd.DataFrame) -> pd.DataFrame:
 
 def format_unix_datetime_columns(df: pd.DataFrame) -> pd.DataFrame:
     formatted = df.copy()
-    for col in ("created_at", "updated_at"):
+    for col in ("created_at", "updated_at", "responded_at"):
         if col in formatted.columns:
             formatted[col] = pd.to_datetime(formatted[col], unit="s", utc=True, errors="coerce")
             formatted[col] = formatted[col].dt.strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -366,6 +616,39 @@ def drop_unwanted_columns(df: pd.DataFrame) -> pd.DataFrame:
     if existing:
         cleaned = cleaned.drop(columns=existing)
     return cleaned
+
+
+def clean_questions_table(df: pd.DataFrame) -> pd.DataFrame:
+    cleaned = df.copy()
+    columns_to_remove = [
+        "type",
+        "session_id",
+        "event_id",
+        "question_author_id",
+        "response_author_id",
+        "responded_orally",
+        "updated_at",
+    ]
+    existing = [col for col in columns_to_remove if col in cleaned.columns]
+    if existing:
+        cleaned = cleaned.drop(columns=existing)
+
+    if "created_at" in cleaned.columns:
+        cleaned = cleaned.rename(columns={"created_at": "asked_at"})
+
+    preferred_order = [
+        "id",
+        "question",
+        "response",
+        "asked_by",
+        "answered_by",
+        "asked_at",
+        "responded_at",
+    ]
+    cols = [c for c in preferred_order if c in cleaned.columns] + [
+        c for c in cleaned.columns if c not in preferred_order
+    ]
+    return cleaned[cols]
 
 
 def fetch_chat_messages(key: str, session: str, page_size: int = DEFAULT_PAGE_SIZE) -> Dict[str, Any]:
@@ -419,6 +702,115 @@ def fetch_chat_messages(key: str, session: str, page_size: int = DEFAULT_PAGE_SI
     return final_payload
 
 
+def fetch_session_questions(key: str, session: str, page_size: int = DEFAULT_PAGE_SIZE) -> Dict[str, Any]:
+    url = f"{API_BASE}/sessions/{session}/questions"
+    headers = build_headers(key)
+
+    page_number = START_PAGE_NUMBER
+    pages_fetched = 0
+    seen_pages = set()
+    all_questions: List[Dict[str, Any]] = []
+    all_included: Dict[str, Dict[str, Any]] = {}
+    final_payload: Dict[str, Any] = {}
+
+    while pages_fetched < MAX_PAGES:
+        if page_number in seen_pages:
+            break
+        seen_pages.add(page_number)
+
+        params = {
+            "page[number]": page_number,
+            "page[size]": page_size,
+            "include": "asker,responder",
+        }
+        resp = requests.get(url, headers=headers, params=params, timeout=30)
+        resp.raise_for_status()
+        payload = resp.json()
+        if not isinstance(payload, dict):
+            payload = {"data": extract_questions(payload)}
+
+        final_payload = payload
+        page_questions = extract_questions(payload)
+        all_questions.extend(page_questions)
+        pages_fetched += 1
+
+        included = payload.get("included")
+        if isinstance(included, list):
+            for item in included:
+                if not isinstance(item, dict):
+                    continue
+                included_id = str(item.get("id") or "")
+                included_type = str(item.get("type") or "")
+                if not included_id or not included_type:
+                    continue
+                all_included[f"{included_type}:{included_id}"] = item
+
+        next_page = _extract_next_page(payload)
+        if next_page is not None:
+            if next_page in seen_pages:
+                break
+            page_number = next_page
+            continue
+
+        if len(page_questions) < page_size:
+            break
+        page_number += 1
+
+    final_payload["data"] = all_questions
+    final_payload["included"] = list(all_included.values())
+    final_payload["pages_fetched"] = pages_fetched
+    final_payload["requested_page_size"] = page_size
+    return final_payload
+
+
+def fetch_event_past_sessions(key: str, event: str, page_size: int = DEFAULT_PAGE_SIZE) -> Dict[str, Any]:
+    url = f"{API_BASE}/events/{event}/sessions"
+    headers = build_headers(key)
+
+    page_number = START_PAGE_NUMBER
+    pages_fetched = 0
+    seen_pages = set()
+    all_sessions: List[Dict[str, Any]] = []
+    final_payload: Dict[str, Any] = {}
+
+    while pages_fetched < MAX_PAGES:
+        if page_number in seen_pages:
+            break
+        seen_pages.add(page_number)
+
+        params = {
+            "page[number]": page_number,
+            "page[size]": page_size,
+            "filter[status]": "past",
+        }
+        resp = requests.get(url, headers=headers, params=params, timeout=30)
+        resp.raise_for_status()
+        payload = resp.json()
+        if not isinstance(payload, dict):
+            payload = {"data": extract_sessions(payload)}
+
+        final_payload = payload
+        page_sessions = extract_sessions(payload)
+        all_sessions.extend(page_sessions)
+        pages_fetched += 1
+
+        next_page = _extract_next_page(payload)
+        if next_page is not None:
+            if next_page in seen_pages:
+                break
+            page_number = next_page
+            continue
+
+        if len(page_sessions) < page_size:
+            break
+        page_number += 1
+
+    final_payload["data"] = all_sessions
+    final_payload["pages_fetched"] = pages_fetched
+    final_payload["requested_page_size"] = page_size
+    return final_payload
+
+
 def load_analysis_prompt(path: Path = ANALYSIS_PROMPT_PATH) -> str:
     if path.exists():
         return path.read_text(encoding="utf-8").strip()
@@ -430,7 +822,31 @@ def load_analysis_prompt(path: Path = ANALYSIS_PROMPT_PATH) -> str:
     )
 
 
-def build_derived_stats(df: pd.DataFrame) -> Dict[str, Any]:
+def build_question_stats(questions_df: pd.DataFrame) -> Dict[str, Any]:
+    stats: Dict[str, Any] = {
+        "total_questions": int(len(questions_df.index)),
+    }
+
+    asker_col = None
+    if "asked_by" in questions_df.columns:
+        asker_col = "asked_by"
+    elif "question_author_id" in questions_df.columns:
+        asker_col = "question_author_id"
+
+    if asker_col is not None:
+        stats["unique_askers"] = int(questions_df[asker_col].nunique())
+        top_askers = questions_df[asker_col].value_counts().head(10)
+        stats["top_askers_by_question_count"] = {str(idx): int(val) for idx, val in top_askers.items()}
+
+    if "response" in questions_df.columns:
+        has_response = questions_df["response"].fillna("").astype(str).str.strip() != ""
+        stats["answered_questions"] = int(has_response.sum())
+        stats["unanswered_questions"] = int((~has_response).sum())
+
+    return stats
+
+
+def build_derived_stats(df: pd.DataFrame, questions_df: Optional[pd.DataFrame] = None) -> Dict[str, Any]:
     stats: Dict[str, Any] = {
         "total_messages": int(len(df.index)),
         "unique_authors": int(df["author_id"].nunique()) if "author_id" in df.columns else 0,
@@ -458,6 +874,9 @@ def build_derived_stats(df: pd.DataFrame) -> Dict[str, Any]:
             "median_chars": float(round(text_lengths.median(), 2)),
             "max_chars": int(text_lengths.max()) if len(text_lengths.index) else 0,
         }
+
+    if questions_df is not None:
+        stats["questions"] = build_question_stats(questions_df)
 
     return stats
 
@@ -564,58 +983,103 @@ def brand_line_chart(
     return fig
 
 
-def render_visual_dashboard(df: pd.DataFrame) -> None:
-    st.subheader("Visual Dashboard")
+def render_visual_dashboard(df: pd.DataFrame, questions_df: Optional[pd.DataFrame] = None) -> None:
+    st.subheader("Session Insights")
 
-    total_messages = int(len(df.index))
+    total_messages = int(len(df.index)) if isinstance(df, pd.DataFrame) else 0
+    total_questions = int(len(questions_df.index)) if isinstance(questions_df, pd.DataFrame) else 0
     unique_authors = int(df["author_id"].nunique()) if "author_id" in df.columns else 0
+    unique_askers = 0
+    if isinstance(questions_df, pd.DataFrame):
+        if "asked_by" in questions_df.columns:
+            unique_askers = int(questions_df["asked_by"].nunique())
+        elif "question_author_id" in questions_df.columns:
+            unique_askers = int(questions_df["question_author_id"].nunique())
     avg_chars = (
         float(round(df["text_content"].fillna("").astype(str).str.len().mean(), 1))
-        if "text_content" in df.columns
+        if "text_content" in df.columns and total_messages
         else 0.0
     )
-    top_author_messages = (
-        int(df["author_id"].value_counts().max()) if "author_id" in df.columns and total_messages else 0
-    )
 
-    col1, col2, col3, col4 = st.columns(4)
+    answered_count = 0
+    if isinstance(questions_df, pd.DataFrame) and "response" in questions_df.columns:
+        answered_mask = questions_df["response"].fillna("").astype(str).str.strip() != ""
+        answered_count = int(answered_mask.sum())
+    unanswered_count = max(total_questions - answered_count, 0)
+
+    col1, col2, col3, col4, col5 = st.columns(5)
     col1.metric("Messages", f"{total_messages}")
-    col2.metric("Unique Authors", f"{unique_authors}")
-    col3.metric("Avg Message Length", f"{avg_chars} chars")
-    col4.metric("Top Author Volume", f"{top_author_messages}")
+    col2.metric("Unique Chatters", f"{unique_authors}")
+    col3.metric("Avg Msg Length", f"{avg_chars} chars")
+    col4.metric("Questions", f"{total_questions}")
+    col5.metric("Unique Askers", f"{unique_askers}")
 
     chart_col1, chart_col2 = st.columns(2)
 
     with chart_col1:
-        st.markdown("**Top Participants**")
+        st.markdown("**Top Contributors (Messages vs Questions)**")
+        top_chatters = pd.DataFrame(columns=["person_id", "count", "kind"])
+        top_askers = pd.DataFrame(columns=["person_id", "count", "kind"])
         if "author_id" in df.columns:
-            top_authors = (
+            top_chatters = (
                 df["author_id"]
                 .value_counts()
-                .head(12)
-                .rename_axis("author_id")
-                .reset_index(name="messages")
+                .head(10)
+                .rename_axis("person_id")
+                .reset_index(name="count")
             )
-            if not top_authors.empty:
-                chart = brand_bar_chart(
-                    top_authors,
-                    x_field="author_id",
-                    y_field="messages",
-                    x_title="Author ID",
-                    y_title="Messages",
-                    tooltip_fields=["author_id", "messages"],
-                )
-                st.plotly_chart(
-                    chart,
-                    use_container_width=True,
-                    config={"displayModeBar": False, "displaylogo": False},
-                )
-            else:
-                st.info("No author data to chart.")
-        else:
-            st.info("No author data to chart.")
+            top_chatters["kind"] = "Messages"
+        if isinstance(questions_df, pd.DataFrame) and "asked_by" in questions_df.columns:
+            top_askers = (
+                questions_df["asked_by"]
+                .value_counts()
+                .head(10)
+                .rename_axis("person_id")
+                .reset_index(name="count")
+            )
+            top_askers["kind"] = "Questions"
+        elif isinstance(questions_df, pd.DataFrame) and "question_author_id" in questions_df.columns:
+            top_askers = (
+                questions_df["question_author_id"]
+                .value_counts()
+                .head(10)
+                .rename_axis("person_id")
+                .reset_index(name="count")
+            )
+            top_askers["kind"] = "Questions"
 
-        st.markdown("**Common Terms**")
+        combined_top = pd.concat([top_chatters, top_askers], ignore_index=True)
+        if not combined_top.empty:
+            top_chart = px.bar(
+                combined_top,
+                x="person_id",
+                y="count",
+                color="kind",
+                barmode="group",
+                color_discrete_map={"Messages": "#8FD0DE", "Questions": "#F4B942"},
+                hover_data=["person_id", "count", "kind"],
+            )
+            top_chart.update_layout(
+                height=300,
+                margin=dict(l=8, r=8, t=8, b=8),
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                font=dict(color="#EAF1F3"),
+                xaxis_title="Author / Asker ID",
+                yaxis_title="Count",
+                legend_title_text="Series",
+            )
+            top_chart.update_xaxes(gridcolor="#2F4B53", zerolinecolor="#2F4B53")
+            top_chart.update_yaxes(gridcolor="#2F4B53", zerolinecolor="#2F4B53")
+            st.plotly_chart(
+                top_chart,
+                use_container_width=True,
+                config={"displayModeBar": False, "displaylogo": False},
+            )
+        else:
+            st.info("Not enough contributor data to chart.")
+
+        st.markdown("**Common Terms (Chat Messages)**")
         terms_df = extract_common_terms(df)
         if not terms_df.empty:
             chart = brand_bar_chart(
@@ -635,60 +1099,105 @@ def render_visual_dashboard(df: pd.DataFrame) -> None:
             st.info("Not enough textual data for term analysis.")
 
     with chart_col2:
-        st.markdown("**Messages Over Time (UTC)**")
+        st.markdown("**Activity Over Time (UTC)**")
+        timeline_frames: List[pd.DataFrame] = []
         if "created_at" in df.columns:
-            ts = pd.to_datetime(df["created_at"], utc=True, errors="coerce")
-            timeline = (
-                pd.DataFrame({"created_at": ts})
+            msg_ts = pd.to_datetime(df["created_at"], utc=True, errors="coerce")
+            msg_timeline = (
+                pd.DataFrame({"created_at": msg_ts})
                 .dropna()
                 .assign(minute=lambda d: d["created_at"].dt.floor("min"))
                 .groupby("minute")
                 .size()
-                .reset_index(name="messages")
+                .reset_index(name="count")
             )
-            if not timeline.empty:
-                chart = brand_line_chart(
-                    timeline,
-                    x_field="minute",
-                    y_field="messages",
-                    x_title="Time (UTC)",
-                    y_title="Messages",
-                    tooltip_fields=["minute", "messages"],
-                )
-                st.plotly_chart(
-                    chart,
-                    use_container_width=True,
-                    config={"displayModeBar": False, "displaylogo": False},
-                )
-            else:
-                st.info("No valid timestamp data to chart.")
-        else:
-            st.info("No timestamp data to chart.")
+            if not msg_timeline.empty:
+                msg_timeline["kind"] = "Messages"
+                timeline_frames.append(msg_timeline)
+        question_time_col = None
+        if isinstance(questions_df, pd.DataFrame):
+            if "asked_at" in questions_df.columns:
+                question_time_col = "asked_at"
+            elif "created_at" in questions_df.columns:
+                question_time_col = "created_at"
 
-        st.markdown("**Message Length Distribution**")
-        if "text_content" in df.columns:
-            lengths = df["text_content"].fillna("").astype(str).str.len()
-            bins = pd.cut(
-                lengths,
-                bins=[-1, 20, 50, 100, 200, 500, 10000],
-                labels=["0-20", "21-50", "51-100", "101-200", "201-500", "500+"],
+        if isinstance(questions_df, pd.DataFrame) and question_time_col is not None:
+            q_ts = pd.to_datetime(questions_df[question_time_col], utc=True, errors="coerce")
+            q_timeline = (
+                pd.DataFrame({"created_at": q_ts})
+                .dropna()
+                .assign(minute=lambda d: d["created_at"].dt.floor("min"))
+                .groupby("minute")
+                .size()
+                .reset_index(name="count")
             )
-            dist = bins.value_counts().sort_index().rename_axis("length_bin").reset_index(name="messages")
-            chart = brand_bar_chart(
-                dist,
-                x_field="length_bin",
-                y_field="messages",
-                x_title="Length Bucket",
-                y_title="Messages",
-                tooltip_fields=["length_bin", "messages"],
+            if not q_timeline.empty:
+                q_timeline["kind"] = "Questions"
+                timeline_frames.append(q_timeline)
+
+        if timeline_frames:
+            timeline = pd.concat(timeline_frames, ignore_index=True)
+            timeline_chart = px.line(
+                timeline,
+                x="minute",
+                y="count",
+                color="kind",
+                markers=True,
+                color_discrete_map={"Messages": "#8FD0DE", "Questions": "#F4B942"},
+                hover_data=["minute", "count", "kind"],
             )
+            timeline_chart.update_layout(
+                height=300,
+                margin=dict(l=8, r=8, t=8, b=8),
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                font=dict(color="#EAF1F3"),
+                xaxis_title="Time (UTC)",
+                yaxis_title="Count",
+                legend_title_text="Series",
+            )
+            timeline_chart.update_xaxes(gridcolor="#2F4B53", zerolinecolor="#2F4B53")
+            timeline_chart.update_yaxes(gridcolor="#2F4B53", zerolinecolor="#2F4B53")
             st.plotly_chart(
-                chart,
+                timeline_chart,
                 use_container_width=True,
                 config={"displayModeBar": False, "displaylogo": False},
             )
         else:
-            st.info("No text content to chart.")
+            st.info("No valid timestamp data to chart.")
+
+        st.markdown("**Question Response Coverage**")
+        if total_questions > 0:
+            status_df = pd.DataFrame(
+                {"status": ["Answered", "Unanswered"], "count": [answered_count, unanswered_count]}
+            )
+            status_chart = px.bar(
+                status_df,
+                x="status",
+                y="count",
+                color="status",
+                color_discrete_map={"Answered": "#5AC77A", "Unanswered": "#F06D6D"},
+                hover_data=["status", "count"],
+            )
+            status_chart.update_layout(
+                height=260,
+                margin=dict(l=8, r=8, t=8, b=8),
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                font=dict(color="#EAF1F3"),
+                xaxis_title="Status",
+                yaxis_title="Questions",
+                showlegend=False,
+            )
+            status_chart.update_xaxes(gridcolor="#2F4B53", zerolinecolor="#2F4B53")
+            status_chart.update_yaxes(gridcolor="#2F4B53", zerolinecolor="#2F4B53")
+            st.plotly_chart(
+                status_chart,
+                use_container_width=True,
+                config={"displayModeBar": False, "displaylogo": False},
+            )
+        else:
+            st.info("No questions fetched yet.")
 
 
 def analyze_with_openai(
@@ -698,6 +1207,7 @@ def analyze_with_openai(
     output_language: str,
     raw_payload: Dict[str, Any],
     derived_stats: Dict[str, Any],
+    questions_payload: Optional[Dict[str, Any]] = None,
 ) -> str:
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -709,6 +1219,8 @@ def analyze_with_openai(
         "derived_stats": derived_stats,
         "raw_api_response": raw_payload,
     }
+    if questions_payload is not None:
+        user_payload["questions_api_response"] = questions_payload
 
     body = {
         "model": model,
@@ -744,21 +1256,69 @@ if "analysis_md" not in st.session_state:
     st.session_state["analysis_md"] = ""
 if "analysis_ran" not in st.session_state:
     st.session_state["analysis_ran"] = False
+if "questions_payload" not in st.session_state:
+    st.session_state["questions_payload"] = None
+if "questions_df" not in st.session_state:
+    st.session_state["questions_df"] = None
+if "event_sessions" not in st.session_state:
+    st.session_state["event_sessions"] = []
+if "event_sessions_for" not in st.session_state:
+    st.session_state["event_sessions_for"] = ""
+if "current_session_id" not in st.session_state:
+    st.session_state["current_session_id"] = ""
+if "session_id_input" not in st.session_state:
+    st.session_state["session_id_input"] = ""
+if "event_id_input" not in st.session_state:
+    st.session_state["event_id_input"] = ""
+if "selected_event_session_id" not in st.session_state:
+    st.session_state["selected_event_session_id"] = None
+
+if load_event_sessions_button:
+    st.session_state["event_sessions"] = []
+    st.session_state["event_sessions_for"] = ""
+    if not api_key or not event_id:
+        st.error("Please provide both API key and event ID.")
+    else:
+        with st.spinner("Loading past sessions..."):
+            try:
+                event_sessions_payload = fetch_event_past_sessions(api_key, event_id.strip())
+            except requests.HTTPError as exc:
+                st.error(format_livestorm_http_error(exc, "Event sessions"))
+                event_sessions_payload = None
+            except requests.RequestException as exc:
+                st.error(f"Event sessions network error: {exc}")
+                event_sessions_payload = None
+
+        if isinstance(event_sessions_payload, dict):
+            options = build_event_session_options(event_sessions_payload)
+            st.session_state["event_sessions"] = options
+            st.session_state["event_sessions_for"] = event_id.strip()
+            if options:
+                st.success(
+                    f"Loaded {len(options)} past sessions across "
+                    f"{event_sessions_payload.get('pages_fetched', 1)} page(s)."
+                )
+            else:
+                st.info("No past sessions were found for this event.")
+            st.rerun()
 
 if fetch_button:
+    fetched_successfully = False
     st.session_state["analysis_md"] = ""
     st.session_state["analysis_ran"] = False
-    if not api_key or not session_id:
-        st.error("Please provide both API key and session ID.")
+    st.session_state["questions_payload"] = None
+    st.session_state["questions_df"] = None
+    if not api_key or not active_session_id:
+        st.error("Please provide API key and a valid session selection.")
     else:
-        with st.spinner("Fetching messages..."):
+        with st.spinner("Fetching chat messages and questions..."):
             try:
-                payload = fetch_chat_messages(api_key, session_id)
+                payload = fetch_chat_messages(api_key, active_session_id)
             except requests.HTTPError as exc:
-                st.error(f"API request failed: {exc}")
+                st.error(format_livestorm_http_error(exc, "Chat"))
                 st.stop()
             except requests.RequestException as exc:
-                st.error(f"Network error: {exc}")
+                st.error(f"Chat network error: {exc}")
                 st.stop()
 
         messages = extract_messages(payload)
@@ -773,20 +1333,51 @@ if fetch_button:
             df = drop_unwanted_columns(df)
             st.session_state["chat_payload"] = payload
             st.session_state["chat_df"] = df
+            st.session_state["current_session_id"] = active_session_id
             st.session_state["analysis_md"] = ""
             st.session_state["analysis_ran"] = False
+            fetched_successfully = True
+
+        try:
+            raw_questions_payload = fetch_session_questions(api_key, active_session_id)
+        except requests.HTTPError as exc:
+            st.warning(format_livestorm_http_error(exc, "Questions"))
+            raw_questions_payload = None
+        except requests.RequestException as exc:
+            st.warning(f"Questions network error: {exc}")
+            raw_questions_payload = None
+
+        if isinstance(raw_questions_payload, dict):
+            raw_questions = extract_questions(raw_questions_payload)
+            if not raw_questions:
+                st.session_state["questions_payload"] = raw_questions_payload
+                st.session_state["questions_df"] = pd.DataFrame()
+            else:
+                people_lookup = extract_included_people(raw_questions_payload)
+                question_rows = [flatten_question(q, people_lookup) for q in raw_questions]
+                qdf = pd.DataFrame(question_rows)
+                qdf = clean_table_headers(qdf)
+                qdf = format_unix_datetime_columns(qdf)
+                qdf = clean_questions_table(qdf)
+                st.session_state["questions_payload"] = raw_questions_payload
+                st.session_state["questions_df"] = qdf
+
+        if fetched_successfully:
+            st.rerun()
 
 if analyze_button:
     payload = st.session_state.get("chat_payload")
     df = st.session_state.get("chat_df")
+    questions_payload = st.session_state.get("questions_payload")
+    questions_df = st.session_state.get("questions_df")
     if payload is None or df is None:
-        st.warning("No fetched messages found. Click 'Fetch chat messages' first.")
+        st.warning("No fetched messages found. Click 'Fetch Chat & Questions' first.")
     elif not api_analysis_key:
         st.warning("Analysis skipped: missing API key in environment.")
     else:
         with st.spinner("Running analysis..."):
             prompt_text = load_analysis_prompt()
-            derived_stats = build_derived_stats(df)
+            derived_stats = build_derived_stats(df, questions_df=questions_df)
             try:
                 analysis_md = analyze_with_openai(
                     api_key=api_analysis_key,
@@ -795,6 +1386,7 @@ if analyze_button:
                     output_language=OUTPUT_LANGUAGE_MAP[output_language_label],
                     raw_payload=payload,
                     derived_stats=derived_stats,
+                    questions_payload=questions_payload,
                 )
             except requests.HTTPError as exc:
                 st.error(f"Analysis API error: {exc}")
@@ -809,15 +1401,12 @@ payload = st.session_state.get("chat_payload")
 df = st.session_state.get("chat_df")
 analysis_md = st.session_state.get("analysis_md", "")
 analysis_ran = st.session_state.get("analysis_ran", False)
+questions_payload = st.session_state.get("questions_payload")
+questions_df = st.session_state.get("questions_df")
+current_session_id = st.session_state.get("current_session_id") or active_session_id
 
 if payload is not None and df is not None:
-    messages = extract_messages(payload)
-    st.caption(
-        f"Fetched {len(messages)} messages across {payload.get('pages_fetched', 1)} page(s) "
-        f"(page size={payload.get('requested_page_size', DEFAULT_PAGE_SIZE)})."
-    )
-
-    render_visual_dashboard(df)
+    render_visual_dashboard(df, questions_df=questions_df)
 
     if analysis_ran and analysis_md:
         st.subheader("Chat Analysis")
@@ -828,7 +1417,7 @@ if payload is not None and df is not None:
         st.download_button(
             label="Download Analysis (Markdown)",
             data=analysis_bytes,
-            file_name=f"livestorm-analysis-{session_id}-{analysis_ts}.md",
+            file_name=f"livestorm-analysis-{current_session_id}-{analysis_ts}.md",
             mime="text/markdown",
         )
 
@@ -841,9 +1430,23 @@ if payload is not None and df is not None:
     st.download_button(
         label="Download CSV",
         data=csv_bytes,
-        file_name=f"livestorm-chat-{session_id}-{timestamp}.csv",
+        file_name=f"livestorm-chat-{current_session_id}-{timestamp}.csv",
         mime="text/csv",
     )
 
-    with st.expander("Raw API response"):
-        st.code(json.dumps(payload, indent=2))
+    if isinstance(questions_df, pd.DataFrame) and not questions_df.empty:
+        st.subheader("Questions")
+        st.dataframe(questions_df, use_container_width=True)
+        questions_csv_bytes = questions_df.to_csv(index=False).encode("utf-8")
+        questions_timestamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+        st.download_button(
+            label="Download Questions CSV",
+            data=questions_csv_bytes,
+            file_name=f"livestorm-questions-{current_session_id}-{questions_timestamp}.csv",
+            mime="text/csv",
+        )
+    elif isinstance(questions_df, pd.DataFrame) and questions_df.empty:
+        st.info(
+            "No questions were found for this session. "
+            "This can happen when attendees did not submit questions or the session has no Q&A data."
+        )
