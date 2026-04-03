@@ -2,6 +2,8 @@ import json
 import os
 import re
 import base64
+import sys
+from io import BytesIO
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -256,6 +258,8 @@ if "show_controls_panel" not in st.session_state:
     st.session_state["show_controls_panel"] = True
 if "analysis_in_progress" not in st.session_state:
     st.session_state["analysis_in_progress"] = False
+if "fetch_in_progress" not in st.session_state:
+    st.session_state["fetch_in_progress"] = False
 
 show_controls_panel = st.session_state.get("show_controls_panel", True)
 controls_col = None
@@ -357,16 +361,23 @@ if controls_col is not None:
             active_session_id = selected_session_from_event or ""
 
         fetch_disabled = not has_api_key
-        if input_mode == "Session ID":
-            fetch_disabled = fetch_disabled or (not session_id_valid)
-        else:
-            fetch_disabled = fetch_disabled or (not bool(active_session_id))
 
-        fetch_button = st.button(
-            "Fetch Chat & Questions",
-            type="primary",
-            disabled=fetch_disabled,
-        )
+        fetch_btn_placeholder = st.empty()
+        if st.session_state.get("fetch_in_progress", False):
+            fetch_btn_placeholder.button(
+                "Fetching Chat & Questions...",
+                type="primary",
+                disabled=True,
+                key="fetch_running_btn",
+            )
+            fetch_button = False
+        else:
+            fetch_button = fetch_btn_placeholder.button(
+                "Fetch Chat & Questions",
+                type="primary",
+                disabled=fetch_disabled,
+                key="fetch_run_btn",
+            )
         if not has_api_key:
             st.caption("Add a Livestorm API key to enable ID inputs.")
         elif input_mode == "Session ID" and session_id and not session_id_valid:
@@ -880,6 +891,74 @@ def load_analysis_prompt(path: Path = ANALYSIS_PROMPT_PATH) -> str:
     )
 
 
+def analysis_markdown_to_pdf_bytes(markdown_text: str, title: str) -> bytes:
+    try:
+        from reportlab.lib import colors
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+        from reportlab.lib.units import mm
+        from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
+    except ImportError as exc:
+        raise RuntimeError("PDF export requires reportlab dependency.") from exc
+
+    styles = getSampleStyleSheet()
+    title_style = styles["Title"]
+    body_style = ParagraphStyle(
+        "Body",
+        parent=styles["BodyText"],
+        fontName="Helvetica",
+        fontSize=10.5,
+        leading=14,
+        textColor=colors.HexColor("#0F1D21"),
+    )
+    heading_style = ParagraphStyle(
+        "Heading",
+        parent=styles["Heading2"],
+        fontName="Helvetica-Bold",
+        fontSize=12.5,
+        leading=16,
+        textColor=colors.HexColor("#12262B"),
+        spaceBefore=8,
+    )
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        leftMargin=18 * mm,
+        rightMargin=18 * mm,
+        topMargin=16 * mm,
+        bottomMargin=16 * mm,
+        title=title,
+    )
+
+    story = [Paragraph(title, title_style), Spacer(1, 8)]
+    lines = [line.strip() for line in markdown_text.splitlines()]
+    for line in lines:
+        if not line:
+            story.append(Spacer(1, 5))
+            continue
+
+        escaped = (
+            line.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+        )
+        if escaped.startswith("### "):
+            story.append(Paragraph(escaped[4:], heading_style))
+        elif escaped.startswith("## "):
+            story.append(Paragraph(escaped[3:], heading_style))
+        elif escaped.startswith("# "):
+            story.append(Paragraph(escaped[2:], heading_style))
+        elif escaped.startswith("- "):
+            story.append(Paragraph(f"&bull; {escaped[2:]}", body_style))
+        else:
+            story.append(Paragraph(escaped, body_style))
+
+    doc.build(story)
+    return buffer.getvalue()
+
+
 def build_question_stats(questions_df: pd.DataFrame) -> Dict[str, Any]:
     stats: Dict[str, Any] = {
         "total_questions": int(len(questions_df.index)),
@@ -1361,6 +1440,10 @@ if load_event_sessions_button:
             st.rerun()
 
 if fetch_button:
+    st.session_state["fetch_in_progress"] = True
+    st.rerun()
+
+if st.session_state.get("fetch_in_progress", False):
     fetched_successfully = False
     st.session_state["analysis_md"] = ""
     st.session_state["analysis_ran"] = False
@@ -1368,16 +1451,19 @@ if fetch_button:
     st.session_state["questions_df"] = None
     if not api_key or not active_session_id:
         st.error("Please provide API key and a valid session selection.")
+        st.session_state["fetch_in_progress"] = False
+        st.rerun()
     else:
-        with st.spinner("Fetching chat messages and questions..."):
-            try:
-                payload = fetch_chat_messages(api_key, active_session_id)
-            except requests.HTTPError as exc:
-                st.error(format_livestorm_http_error(exc, "Chat"))
-                st.stop()
-            except requests.RequestException as exc:
-                st.error(f"Chat network error: {exc}")
-                st.stop()
+        try:
+            payload = fetch_chat_messages(api_key, active_session_id)
+        except requests.HTTPError as exc:
+            st.error(format_livestorm_http_error(exc, "Chat"))
+            st.session_state["fetch_in_progress"] = False
+            st.rerun()
+        except requests.RequestException as exc:
+            st.error(f"Chat network error: {exc}")
+            st.session_state["fetch_in_progress"] = False
+            st.rerun()
 
         messages = extract_messages(payload)
         if not messages:
@@ -1421,7 +1507,10 @@ if fetch_button:
                 st.session_state["questions_df"] = qdf
 
         if fetched_successfully:
+            st.session_state["fetch_in_progress"] = False
             st.rerun()
+        else:
+            st.session_state["fetch_in_progress"] = False
 
 if analyze_button:
     st.session_state["analysis_in_progress"] = True
@@ -1483,12 +1572,40 @@ with main_col:
 
             analysis_bytes = analysis_md.encode("utf-8")
             analysis_ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
-            st.download_button(
-                label="Download Analysis (Markdown)",
-                data=analysis_bytes,
-                file_name=f"livestorm-analysis-{current_session_id}-{analysis_ts}.md",
-                mime="text/markdown",
-            )
+            download_col, _ = st.columns([1.1, 2.9])
+            with download_col:
+                download_format = st.selectbox(
+                    "Download As",
+                    options=["PDF", "Markdown"],
+                    index=0,
+                    key=f"analysis_download_format_{current_session_id}",
+                )
+                if download_format == "Markdown":
+                    st.download_button(
+                        label="Download Analysis",
+                        data=analysis_bytes,
+                        file_name=f"livestorm-analysis-{current_session_id}-{analysis_ts}.md",
+                        mime="text/markdown",
+                        use_container_width=True,
+                    )
+                else:
+                    try:
+                        pdf_bytes = analysis_markdown_to_pdf_bytes(
+                            analysis_md,
+                            title="Livestorm Chat & Questions Analysis",
+                        )
+                        st.download_button(
+                            label="Download Analysis",
+                            data=pdf_bytes,
+                            file_name=f"livestorm-analysis-{current_session_id}-{analysis_ts}.pdf",
+                            mime="application/pdf",
+                            use_container_width=True,
+                        )
+                    except RuntimeError:
+                        st.caption(
+                            "PDF export unavailable (missing reportlab). "
+                            f"Install with: `{sys.executable} -m pip install reportlab`"
+                        )
 
         st.subheader("Chat messages")
         st.dataframe(df, use_container_width=True)
