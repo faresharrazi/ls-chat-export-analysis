@@ -7,8 +7,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import altair as alt
 import pandas as pd
+import plotly.express as px
 import requests
 import streamlit as st
 from streamlit.errors import StreamlitSecretNotFoundError
@@ -514,41 +514,54 @@ def extract_common_terms(df: pd.DataFrame, top_n: int = 12) -> pd.DataFrame:
 
 def brand_bar_chart(
     data: pd.DataFrame, x_field: str, y_field: str, x_title: str, y_title: str, tooltip_fields: List[str]
-) -> alt.Chart:
-    return (
-        alt.Chart(data)
-        .mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4, color="#8FD0DE")
-        .encode(
-            x=alt.X(f"{x_field}:N", sort="-y", title=x_title),
-            y=alt.Y(f"{y_field}:Q", title=y_title),
-            tooltip=tooltip_fields,
-        )
-        .properties(height=260)
-        .configure_axis(labelColor="#EAF1F3", titleColor="#EAF1F3", gridColor="#2F4B53")
-        .configure_view(strokeOpacity=0)
-        .configure(background="transparent")
+):
+    fig = px.bar(
+        data,
+        x=x_field,
+        y=y_field,
+        color_discrete_sequence=["#8FD0DE"],
+        hover_data=tooltip_fields,
     )
+    fig.update_layout(
+        height=280,
+        margin=dict(l=8, r=8, t=8, b=8),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#EAF1F3"),
+        xaxis_title=x_title,
+        yaxis_title=y_title,
+        showlegend=False,
+    )
+    fig.update_xaxes(gridcolor="#2F4B53", zerolinecolor="#2F4B53")
+    fig.update_yaxes(gridcolor="#2F4B53", zerolinecolor="#2F4B53")
+    return fig
 
 
 def brand_line_chart(
     data: pd.DataFrame, x_field: str, y_field: str, x_title: str, y_title: str, tooltip_fields: List[str]
-) -> alt.Chart:
-    line = alt.Chart(data).mark_line(color="#8FD0DE", strokeWidth=2.8).encode(
-        x=alt.X(f"{x_field}:T", title=x_title),
-        y=alt.Y(f"{y_field}:Q", title=y_title),
-        tooltip=tooltip_fields,
+):
+    fig = px.line(
+        data,
+        x=x_field,
+        y=y_field,
+        markers=True,
+        color_discrete_sequence=["#8FD0DE"],
+        hover_data=tooltip_fields,
     )
-    points = alt.Chart(data).mark_circle(color="#FFFFFF", size=42).encode(
-        x=alt.X(f"{x_field}:T"),
-        y=alt.Y(f"{y_field}:Q"),
+    fig.update_traces(line=dict(width=3), marker=dict(size=7, color="#FFFFFF"))
+    fig.update_layout(
+        height=280,
+        margin=dict(l=8, r=8, t=8, b=8),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#EAF1F3"),
+        xaxis_title=x_title,
+        yaxis_title=y_title,
+        showlegend=False,
     )
-    return (
-        (line + points)
-        .properties(height=260)
-        .configure_axis(labelColor="#EAF1F3", titleColor="#EAF1F3", gridColor="#2F4B53")
-        .configure_view(strokeOpacity=0)
-        .configure(background="transparent")
-    )
+    fig.update_xaxes(gridcolor="#2F4B53", zerolinecolor="#2F4B53")
+    fig.update_yaxes(gridcolor="#2F4B53", zerolinecolor="#2F4B53")
+    return fig
 
 
 def render_visual_dashboard(df: pd.DataFrame) -> None:
@@ -592,7 +605,11 @@ def render_visual_dashboard(df: pd.DataFrame) -> None:
                     y_title="Messages",
                     tooltip_fields=["author_id", "messages"],
                 )
-                st.altair_chart(chart, use_container_width=True)
+                st.plotly_chart(
+                    chart,
+                    use_container_width=True,
+                    config={"displayModeBar": False, "displaylogo": False},
+                )
             else:
                 st.info("No author data to chart.")
         else:
@@ -609,7 +626,11 @@ def render_visual_dashboard(df: pd.DataFrame) -> None:
                 y_title="Count",
                 tooltip_fields=["term", "count"],
             )
-            st.altair_chart(chart, use_container_width=True)
+            st.plotly_chart(
+                chart,
+                use_container_width=True,
+                config={"displayModeBar": False, "displaylogo": False},
+            )
         else:
             st.info("Not enough textual data for term analysis.")
 
@@ -634,7 +655,11 @@ def render_visual_dashboard(df: pd.DataFrame) -> None:
                     y_title="Messages",
                     tooltip_fields=["minute", "messages"],
                 )
-                st.altair_chart(chart, use_container_width=True)
+                st.plotly_chart(
+                    chart,
+                    use_container_width=True,
+                    config={"displayModeBar": False, "displaylogo": False},
+                )
             else:
                 st.info("No valid timestamp data to chart.")
         else:
@@ -657,7 +682,11 @@ def render_visual_dashboard(df: pd.DataFrame) -> None:
                 y_title="Messages",
                 tooltip_fields=["length_bin", "messages"],
             )
-            st.altair_chart(chart, use_container_width=True)
+            st.plotly_chart(
+                chart,
+                use_container_width=True,
+                config={"displayModeBar": False, "displaylogo": False},
+            )
         else:
             st.info("No text content to chart.")
 
