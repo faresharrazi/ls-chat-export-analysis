@@ -23,8 +23,9 @@ START_PAGE_NUMBER = 0
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
 ANALYSIS_PROMPT_PATH = Path("prompts/openai_chat_analysis_prompt.txt")
 ENV_PATH = Path(".env")
-ICON_PATH = Path("/Users/fares/Code/chat-analysis/Icon-Livestorm-Primary.png")
-HEADER_ICON_PATH = Path("/Users/fares/Code/chat-analysis/Icon-Livestorm-Tertiary-Light.png")
+BASE_DIR = Path(__file__).resolve().parent
+ICON_PATH = BASE_DIR / "Icon-Livestorm-Primary.png"
+HEADER_ICON_PATH = BASE_DIR / "Icon-Livestorm-Tertiary-Light.png"
 OUTPUT_LANGUAGE_MAP = {
     "English": "English",
     "French": "French",
