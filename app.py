@@ -335,7 +335,7 @@ if controls_col is not None:
             event_id_valid = bool(EVENT_ID_PATTERN.match(event_id.strip()))
             load_event_sessions_button = st.button(
                 "Load Past Sessions",
-                disabled=not (has_api_key and event_id_valid),
+                disabled=not has_api_key,
             )
 
             event_sessions = st.session_state.get("event_sessions", [])
@@ -364,21 +364,25 @@ if controls_col is not None:
         fetch_disabled = not has_api_key
 
         fetch_btn_placeholder = st.empty()
-        if st.session_state.get("fetch_in_progress", False):
-            fetch_btn_placeholder.button(
-                "Fetching Chat & Questions...",
-                type="primary",
-                disabled=True,
-                key="fetch_running_btn",
-            )
-            fetch_button = False
+        can_show_fetch_button = input_mode == "Session ID" or bool(active_session_id)
+        if can_show_fetch_button:
+            if st.session_state.get("fetch_in_progress", False):
+                fetch_btn_placeholder.button(
+                    "Fetching Chat & Questions...",
+                    type="primary",
+                    disabled=True,
+                    key="fetch_running_btn",
+                )
+                fetch_button = False
+            else:
+                fetch_button = fetch_btn_placeholder.button(
+                    "Fetch Chat & Questions",
+                    type="primary",
+                    disabled=fetch_disabled,
+                    key="fetch_run_btn",
+                )
         else:
-            fetch_button = fetch_btn_placeholder.button(
-                "Fetch Chat & Questions",
-                type="primary",
-                disabled=fetch_disabled,
-                key="fetch_run_btn",
-            )
+            fetch_button = False
         if not has_api_key:
             st.caption("Add a Livestorm API key to enable ID inputs.")
         elif input_mode == "Session ID" and session_id and not session_id_valid:
@@ -1414,8 +1418,12 @@ if "selected_event_session_id" not in st.session_state:
 if load_event_sessions_button:
     st.session_state["event_sessions"] = []
     st.session_state["event_sessions_for"] = ""
-    if not api_key or not event_id:
-        st.error("Please provide both API key and event ID.")
+    if not api_key:
+        st.error("Please provide your Livestorm API key.")
+    elif not event_id:
+        st.error("Please provide an event ID.")
+    elif not EVENT_ID_PATTERN.match(event_id.strip()):
+        st.error("Event ID must be a valid UUID format.")
     else:
         with st.spinner("Loading past sessions..."):
             try:
