@@ -30,6 +30,7 @@ SESSION_DEFAULTS = {
     "analysis_include_questions": False,
     "analysis_include_chat_questions": False,
     "analysis_include_transcript": False,
+    "analysis_include_transcript_pending": False,
     "transcript_verbose": False,
     "transcript_job_id": "",
     "transcript_job_status": "",
@@ -77,6 +78,7 @@ def reset_transcript_state() -> None:
     st.session_state["transcript_payload"] = None
     st.session_state["transcript_text"] = ""
     st.session_state["analysis_include_transcript"] = False
+    st.session_state["analysis_include_transcript_pending"] = False
     st.session_state["last_fetched_transcript_signature"] = ""
     st.session_state["transcript_job_id"] = ""
     st.session_state["transcript_job_status"] = ""

@@ -1440,12 +1440,16 @@ def build_cross_source_insights(
             & reaction_moments_df["transcript_excerpt"].fillna("").astype(str).str.strip().ne("")
         ].copy()
         if not reaction_moments_df.empty:
+            reaction_moments_df["total_reactions"] = (
+                reaction_moments_df["chat_messages"].astype(float)
+                + reaction_moments_df["question_count"].astype(float)
+            )
             reaction_moments_df["excerpt"] = reaction_moments_df["transcript_excerpt"].apply(
                 lambda value: str(value)[:120] + ("..." if len(str(value)) > 120 else "")
             )
             reaction_moments_df = reaction_moments_df.sort_values(
-                by=["question_count", "chat_messages", "bucket_start_pct"],
-                ascending=[False, False, True],
+                by=["total_reactions", "question_count", "chat_messages", "bucket_start_pct"],
+                ascending=[False, False, False, True],
             ).head(8).reset_index(drop=True)
     else:
         reaction_moments_df = pd.DataFrame()

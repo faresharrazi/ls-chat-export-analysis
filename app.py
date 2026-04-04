@@ -159,6 +159,7 @@ def apply_transcript_success(session_id: str, verbose: bool, transcript_payload:
     st.session_state["transcript_job_status"] = "completed"
     st.session_state["transcript_job_started_at"] = 0.0
     mark_analysis_source_defaults(st.session_state, include_transcript=True)
+    st.session_state["analysis_include_transcript_pending"] = True
 
 
 def fail_transcript_job(message: str, details: Dict[str, Any] | None = None, *, status: str = "failed") -> None:
@@ -476,7 +477,7 @@ if controls_col is not None:
                     key="transcript_fetch_btn",
                 )
                 if transcript_request_already_fetched:
-                    st.caption("Transcript already fetched for this session and verbose setting. Change one of them to fetch again.")
+                    st.caption("Transcript already fetched for this session with this verbose setting. Change one of them to fetch again.")
 
         if not has_api_key and not has_transcript_api_key:
             st.caption("Add a Livestorm API key or set `API_AUTH_KEY` to enable transcript fetches.")

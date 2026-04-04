@@ -269,10 +269,12 @@ def render_transcript_block(
         transcript_insights = build_transcript_insights(transcript_payload)
         summary = transcript_insights.get("summary", {})
         segments_df = transcript_insights.get("segments_df", pd.DataFrame())
-        timeline_df = transcript_insights.get("timeline_df", pd.DataFrame())
         pace_df = transcript_insights.get("pace_df", pd.DataFrame())
         terms_df = transcript_insights.get("terms_df", pd.DataFrame())
-        if isinstance(segments_df, pd.DataFrame) and not segments_df.empty:
+        transcript = transcript_payload.get("transcript") if isinstance(transcript_payload.get("transcript"), dict) else transcript_payload
+        is_timestamped = bool(transcript.get("timestamped")) if isinstance(transcript, dict) else False
+
+        if is_timestamped and isinstance(segments_df, pd.DataFrame) and not segments_df.empty:
             metric_col1, metric_col2 = st.columns(2)
             metric_col1.metric("Words", f"{summary.get('total_words', 0)}")
             metric_col2.metric("Avg Pace", f"{summary.get('avg_words_per_minute', 0)} wpm")
@@ -333,6 +335,8 @@ def render_transcript_block(
                 insight_bits.append(f"Top meaningful term: `{summary['top_term']}`")
             if insight_bits:
                 st.caption(" | ".join(insight_bits))
+        elif transcript_text:
+            st.caption("Charts are available for verbose transcripts only.")
 
         if transcript_text:
             transcript_timestamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
@@ -342,7 +346,7 @@ def render_transcript_block(
                 file_name=f"livestorm-transcript-{current_session_id}-{transcript_timestamp}.json",
                 mime="application/json",
             )
-            if isinstance(segments_df, pd.DataFrame) and not segments_df.empty:
+            if is_timestamped and isinstance(segments_df, pd.DataFrame) and not segments_df.empty:
                 transcript_tab, segments_tab = st.tabs(["Transcript", "Segments"])
                 with transcript_tab:
                     st.text_area(
@@ -441,6 +445,9 @@ def render_analysis_block(
             st.session_state["analysis_include_chat_questions"] = False
         if not transcript_available and st.session_state.get("analysis_include_transcript"):
             st.session_state["analysis_include_transcript"] = False
+        if transcript_available and st.session_state.get("analysis_include_transcript_pending"):
+            st.session_state["analysis_include_transcript"] = True
+            st.session_state["analysis_include_transcript_pending"] = False
 
         st.caption("Choose the data sources to include before running the analysis.")
         st.checkbox("Transcript", key="analysis_include_transcript", disabled=not transcript_available)
