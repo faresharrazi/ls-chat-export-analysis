@@ -1,3 +1,4 @@
+import logging
 import os
 from typing import List
 
@@ -24,6 +25,8 @@ from livestorm_app.services import (
     build_analysis_prompt,
     build_derived_stats,
     build_event_session_options,
+    build_http_error_debug_details,
+    build_request_exception_debug_details,
     clean_questions_table,
     clean_table_headers,
     drop_unwanted_columns,
@@ -51,6 +54,40 @@ from livestorm_app.state import (
     reset_chat_question_state,
     reset_transcript_state,
 )
+
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+def build_transcript_request_signature(session_id: str, verbose: bool) -> str:
+    return f"{str(session_id).strip()}::verbose={str(bool(verbose)).lower()}"
+
+
+def set_api_error_details(resource_label: str, details: dict | None) -> None:
+    st.session_state["last_api_error_details"] = {
+        "resource": resource_label,
+        **(details or {}),
+    } if details is not None else {"resource": resource_label}
+
+
+def set_api_error_message(message: str) -> None:
+    st.session_state["last_api_error_message"] = message
+
+
+def clear_api_error_details() -> None:
+    st.session_state["last_api_error_details"] = None
+    st.session_state["last_api_error_message"] = ""
+
+
+def render_api_error_details() -> None:
+    error_message = st.session_state.get("last_api_error_message", "")
+    if error_message:
+        st.error(error_message)
+    details = st.session_state.get("last_api_error_details")
+    if isinstance(details, dict) and details:
+        with st.expander("Error details"):
+            st.json(details)
 
 
 configure_page()
@@ -82,9 +119,14 @@ event_id = st.session_state.get("event_id_input", "")
 session_id_valid = bool(SESSION_ID_PATTERN.match(str(session_id).strip()))
 event_id_valid = bool(EVENT_ID_PATTERN.match(str(event_id).strip()))
 active_session_id = get_active_session_id(input_mode, session_id, selected_session_from_event)
+current_transcript_signature = build_transcript_request_signature(
+    active_session_id,
+    bool(st.session_state.get("transcript_verbose", False)),
+)
 
 if controls_col is not None:
     with controls_col:
+        render_api_error_details()
         st.subheader("Connection")
         api_key = st.text_input(
             "Livestorm API key",
@@ -164,9 +206,22 @@ if controls_col is not None:
                     st.caption(f"Selected session: `{selected_session_from_event}`")
 
         active_session_id = get_active_session_id(input_mode, session_id, selected_session_from_event)
+        current_transcript_signature = build_transcript_request_signature(
+            active_session_id,
+            bool(st.session_state.get("transcript_verbose", False)),
+        )
 
-        fetch_disabled = not has_api_key
-        transcript_fetch_disabled = not has_transcript_api_key or not bool(active_session_id)
+        chat_request_already_fetched = (
+            bool(active_session_id)
+            and st.session_state.get("last_fetched_chat_session_id", "") == active_session_id
+        )
+        transcript_request_already_fetched = (
+            bool(active_session_id)
+            and st.session_state.get("last_fetched_transcript_signature", "") == current_transcript_signature
+        )
+
+        fetch_disabled = (not has_api_key) or chat_request_already_fetched
+        transcript_fetch_disabled = (not has_transcript_api_key) or (not bool(active_session_id)) or transcript_request_already_fetched
         can_show_fetch_button = input_mode == "Session ID" or bool(active_session_id)
 
         if can_show_fetch_button:
@@ -185,6 +240,8 @@ if controls_col is not None:
                     disabled=fetch_disabled,
                     key="fetch_run_btn",
                 )
+                if chat_request_already_fetched:
+                    st.caption("Chat & questions already fetched for this session. Change the session to fetch again.")
 
             transcript_btn_placeholder = st.empty()
             if st.session_state.get("transcript_fetch_in_progress", False):
@@ -207,6 +264,8 @@ if controls_col is not None:
                     disabled=transcript_fetch_disabled,
                     key="transcript_fetch_btn",
                 )
+                if transcript_request_already_fetched:
+                    st.caption("Transcript already fetched for this session and verbose setting. Change one of them to fetch again.")
 
         if not has_api_key and not has_transcript_api_key:
             st.caption("Add a Livestorm API key or set `API_AUTH_KEY` to enable transcript fetches.")
@@ -241,13 +300,18 @@ if st.session_state.get("load_event_sessions_in_progress", False):
         try:
             event_sessions_payload = fetch_event_past_sessions(api_key, event_id.strip())
         except requests.HTTPError as exc:
-            st.error(format_livestorm_http_error(exc, "Event sessions"))
+            logger.exception("Event sessions request failed", extra={"event_id": event_id.strip()})
+            set_api_error_details("Event sessions", build_http_error_debug_details(exc, "Event sessions"))
+            set_api_error_message(format_livestorm_http_error(exc, "Event sessions"))
             event_sessions_payload = None
         except requests.RequestException as exc:
-            st.error(f"Event sessions network error: {exc}")
+            logger.exception("Event sessions network error", extra={"event_id": event_id.strip()})
+            set_api_error_details("Event sessions", build_request_exception_debug_details(exc, "Event sessions"))
+            set_api_error_message(f"Event sessions network error: {exc}")
             event_sessions_payload = None
 
         if isinstance(event_sessions_payload, dict):
+            clear_api_error_details()
             options = build_event_session_options(event_sessions_payload)
             st.session_state["event_sessions"] = options
             st.session_state["event_sessions_for"] = event_id.strip()
@@ -287,11 +351,15 @@ if st.session_state.get("fetch_in_progress", False):
         with st.spinner("Fetching chat messages..."):
             payload = fetch_chat_messages(api_key, active_session_id)
     except requests.HTTPError as exc:
-        st.error(format_livestorm_http_error(exc, "Chat"))
+        logger.exception("Chat fetch failed", extra={"session_id": active_session_id})
+        set_api_error_details("Chat", build_http_error_debug_details(exc, "Chat"))
+        set_api_error_message(format_livestorm_http_error(exc, "Chat"))
         st.session_state["fetch_in_progress"] = False
         st.rerun()
     except requests.RequestException as exc:
-        st.error(f"Chat network error: {exc}")
+        logger.exception("Chat network error", extra={"session_id": active_session_id})
+        set_api_error_details("Chat", build_request_exception_debug_details(exc, "Chat"))
+        set_api_error_message(f"Chat network error: {exc}")
         st.session_state["fetch_in_progress"] = False
         st.rerun()
 
@@ -310,15 +378,20 @@ if st.session_state.get("fetch_in_progress", False):
         st.session_state["current_session_id"] = active_session_id
         mark_analysis_source_defaults(st.session_state, include_chat=True)
         fetched_successfully = True
+        clear_api_error_details()
 
     try:
         with st.spinner("Fetching session questions..."):
             raw_questions_payload = fetch_session_questions(api_key, active_session_id)
     except requests.HTTPError as exc:
-        st.warning(format_livestorm_http_error(exc, "Questions"))
+        logger.exception("Questions fetch failed", extra={"session_id": active_session_id})
+        set_api_error_details("Questions", build_http_error_debug_details(exc, "Questions"))
+        set_api_error_message(format_livestorm_http_error(exc, "Questions"))
         raw_questions_payload = None
     except requests.RequestException as exc:
-        st.warning(f"Questions network error: {exc}")
+        logger.exception("Questions network error", extra={"session_id": active_session_id})
+        set_api_error_details("Questions", build_request_exception_debug_details(exc, "Questions"))
+        set_api_error_message(f"Questions network error: {exc}")
         raw_questions_payload = None
 
     if isinstance(raw_questions_payload, dict):
@@ -336,6 +409,8 @@ if st.session_state.get("fetch_in_progress", False):
             st.session_state["questions_df"] = qdf
         if isinstance(st.session_state.get("questions_df"), pd.DataFrame):
             mark_analysis_source_defaults(st.session_state, include_questions=True)
+        if fetched_successfully:
+            st.session_state["last_fetched_chat_session_id"] = active_session_id
 
     st.session_state["fetch_in_progress"] = False
     if fetched_successfully:
@@ -364,11 +439,21 @@ if st.session_state.get("transcript_fetch_in_progress", False):
             verbose=bool(st.session_state.get("transcript_verbose", False)),
         )
     except requests.HTTPError as exc:
-        st.error(format_generic_http_error(exc, "Transcript"))
+        logger.exception(
+            "Transcript fetch failed",
+            extra={"session_id": active_session_id, "verbose": bool(st.session_state.get("transcript_verbose", False))},
+        )
+        set_api_error_details("Transcript", build_http_error_debug_details(exc, "Transcript"))
+        set_api_error_message(format_generic_http_error(exc, "Transcript"))
         st.session_state["transcript_fetch_in_progress"] = False
         st.rerun()
     except requests.RequestException as exc:
-        st.error(f"Transcript network error: {exc}")
+        logger.exception(
+            "Transcript network error",
+            extra={"session_id": active_session_id, "verbose": bool(st.session_state.get("transcript_verbose", False))},
+        )
+        set_api_error_details("Transcript", build_request_exception_debug_details(exc, "Transcript"))
+        set_api_error_message(f"Transcript network error: {exc}")
         st.session_state["transcript_fetch_in_progress"] = False
         st.rerun()
 
@@ -378,8 +463,13 @@ if st.session_state.get("transcript_fetch_in_progress", False):
 
     st.session_state["transcript_payload"] = transcript_payload
     st.session_state["transcript_text"] = transcript_text
+    st.session_state["last_fetched_transcript_signature"] = build_transcript_request_signature(
+        active_session_id,
+        bool(st.session_state.get("transcript_verbose", False)),
+    )
     st.session_state["current_session_id"] = active_session_id
     mark_analysis_source_defaults(st.session_state, include_transcript=True)
+    clear_api_error_details()
     st.session_state["transcript_fetch_in_progress"] = False
     st.rerun()
 

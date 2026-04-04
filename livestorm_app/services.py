@@ -1,4 +1,5 @@
 import json
+import logging
 import math
 import re
 import sys
@@ -23,6 +24,9 @@ from livestorm_app.config import (
     START_PAGE_NUMBER,
     TRANSCRIPT_API_URL,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 COMMON_STOPWORDS = {
@@ -136,6 +140,49 @@ def format_generic_http_error(exc: requests.HTTPError, resource_label: str) -> s
     if status_code is not None:
         return f"{resource_label} request failed (HTTP {status_code})."
     return f"{resource_label} request failed."
+
+
+def build_http_error_debug_details(exc: requests.HTTPError, resource_label: str) -> Dict[str, Any]:
+    response = exc.response
+    details: Dict[str, Any] = {
+        "resource": resource_label,
+        "exception_type": type(exc).__name__,
+    }
+    if response is None:
+        return details
+
+    details["status_code"] = response.status_code
+    details["url"] = response.url
+    request = response.request
+    if request is not None:
+        details["method"] = request.method
+
+    try:
+        payload = response.json()
+        if isinstance(payload, (dict, list)):
+            details["response_json"] = payload
+    except ValueError:
+        body_text = response.text.strip()
+        if body_text:
+            details["response_text"] = body_text[:1200]
+    return details
+
+
+def build_request_exception_debug_details(exc: requests.RequestException, resource_label: str) -> Dict[str, Any]:
+    details: Dict[str, Any] = {
+        "resource": resource_label,
+        "exception_type": type(exc).__name__,
+        "message": str(exc),
+    }
+    response = getattr(exc, "response", None)
+    if response is not None:
+        details["status_code"] = response.status_code
+        details["url"] = response.url
+    request = getattr(exc, "request", None)
+    if request is not None:
+        details["method"] = request.method
+        details["url"] = details.get("url") or request.url
+    return details
 
 
 def extract_messages(payload: Dict[str, Any]) -> List[Dict[str, Any]]:

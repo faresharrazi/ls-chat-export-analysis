@@ -32,6 +32,10 @@ SESSION_DEFAULTS = {
     "transcript_verbose": False,
     "analysis_language": "English",
     "load_event_sessions_in_progress": False,
+    "last_fetched_chat_session_id": "",
+    "last_fetched_transcript_signature": "",
+    "last_api_error_details": None,
+    "last_api_error_message": "",
 }
 
 
@@ -60,9 +64,11 @@ def reset_chat_question_state() -> None:
     st.session_state["analysis_include_chat"] = False
     st.session_state["analysis_include_questions"] = False
     st.session_state["analysis_include_chat_questions"] = False
+    st.session_state["last_fetched_chat_session_id"] = ""
 
 
 def reset_transcript_state() -> None:
     st.session_state["transcript_payload"] = None
     st.session_state["transcript_text"] = ""
     st.session_state["analysis_include_transcript"] = False
+    st.session_state["last_fetched_transcript_signature"] = ""
