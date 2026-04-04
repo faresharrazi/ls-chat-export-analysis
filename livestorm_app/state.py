@@ -25,11 +25,16 @@ SESSION_DEFAULTS = {
     "transcript_payload": None,
     "transcript_text": "",
     "transcript_fetch_in_progress": False,
+    "chat_fetch_job_id": "",
     "analysis_include_chat": False,
     "analysis_include_questions": False,
     "analysis_include_chat_questions": False,
     "analysis_include_transcript": False,
     "transcript_verbose": False,
+    "transcript_job_id": "",
+    "transcript_job_status": "",
+    "transcript_job_started_at": 0.0,
+    "background_job_notice": "",
     "analysis_language": "English",
     "load_event_sessions_in_progress": False,
     "last_fetched_chat_session_id": "",
@@ -65,6 +70,7 @@ def reset_chat_question_state() -> None:
     st.session_state["analysis_include_questions"] = False
     st.session_state["analysis_include_chat_questions"] = False
     st.session_state["last_fetched_chat_session_id"] = ""
+    st.session_state["chat_fetch_job_id"] = ""
 
 
 def reset_transcript_state() -> None:
@@ -72,3 +78,6 @@ def reset_transcript_state() -> None:
     st.session_state["transcript_text"] = ""
     st.session_state["analysis_include_transcript"] = False
     st.session_state["last_fetched_transcript_signature"] = ""
+    st.session_state["transcript_job_id"] = ""
+    st.session_state["transcript_job_status"] = ""
+    st.session_state["transcript_job_started_at"] = 0.0

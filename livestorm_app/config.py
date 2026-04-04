@@ -8,6 +8,7 @@ from streamlit.errors import StreamlitSecretNotFoundError
 API_BASE = "https://api.livestorm.co/v1"
 OPENAI_CHAT_COMPLETIONS_URL = "https://api.openai.com/v1/chat/completions"
 TRANSCRIPT_API_URL = "https://ls-video-transcribe.onrender.com/api/transcribe"
+TRANSCRIPT_JOBS_API_URL = f"{TRANSCRIPT_API_URL}/jobs"
 DEFAULT_PAGE_SIZE = 100
 MAX_PAGES = 1000
 START_PAGE_NUMBER = 0

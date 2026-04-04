@@ -3,7 +3,7 @@
 Streamlit app to:
 - Fetch Livestorm session chat messages (with pagination)
 - Fetch Livestorm session questions (with pagination)
-- Fetch transcript JSON from the transcript API by session ID
+- Fetch transcript JSON from the transcript API by session ID via the async job API
 - Explore transcript, chat, and questions in dedicated expandable blocks
 - Clean and export messages/questions as CSV
 - Run OpenAI analysis on `Transcript`, `Chat + Questions`, or all three together
@@ -74,5 +74,6 @@ You can change the analysis instructions without code edits:
 - Provide your Livestorm API key and session ID in the sidebar.
 - OpenAI usage is optional; if no OpenAI key is provided, fetch/export still works.
 - Transcript fetches require `API_AUTH_KEY`.
+- Transcript fetches use `POST /api/transcribe/jobs` plus polling every 3 seconds for up to 15 minutes.
 - Questions are never analyzed by themselves; they are always bundled with chat.
 - There is no guaranteed free OpenAI model; `gpt-4o-mini` is typically a low-cost option.

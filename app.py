@@ -1,11 +1,13 @@
 import logging
 import os
-from typing import List
+import time
+from typing import Any, Dict, List
 
 import pandas as pd
 import requests
 import streamlit as st
 
+from livestorm_app.background_jobs import get_background_job_manager
 from livestorm_app.config import (
     DEFAULT_OPENAI_MODEL,
     INPUT_MODE_OPTIONS,
@@ -24,24 +26,16 @@ from livestorm_app.services import (
     analyze_with_openai,
     build_analysis_prompt,
     build_derived_stats,
+    build_transcript_job_debug_details,
     build_event_session_options,
     build_http_error_debug_details,
     build_request_exception_debug_details,
-    clean_questions_table,
-    clean_table_headers,
-    drop_unwanted_columns,
-    extract_included_people,
-    extract_messages,
-    extract_questions,
-    fetch_chat_messages,
+    create_transcript_job,
+    fetch_chat_and_questions_bundle,
     fetch_event_past_sessions,
-    fetch_session_questions,
-    fetch_session_transcript,
-    flatten_message,
-    flatten_question,
+    get_transcript_job,
     format_generic_http_error,
     format_livestorm_http_error,
-    format_unix_datetime_columns,
     mark_analysis_source_defaults,
     build_transcript_display_text,
 )
@@ -58,6 +52,9 @@ from livestorm_app.state import (
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+job_manager = get_background_job_manager()
+
+TRANSCRIPT_POLL_INTERVAL_SECONDS = 1
 
 
 def build_transcript_request_signature(session_id: str, verbose: bool) -> str:
@@ -88,6 +85,202 @@ def render_api_error_details() -> None:
     if isinstance(details, dict) and details:
         with st.expander("Error details"):
             st.json(details)
+
+
+def clear_background_notice() -> None:
+    st.session_state["background_job_notice"] = ""
+
+
+def set_background_notice(message: str) -> None:
+    st.session_state["background_job_notice"] = message
+
+
+def build_failed_job_result(message: str, *, details: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    return {"ok": False, "message": message, "details": details or {}}
+
+
+def run_chat_questions_job(api_key: str, session_id: str) -> Dict[str, Any]:
+    try:
+        bundle = fetch_chat_and_questions_bundle(api_key, session_id)
+        return {"ok": True, "session_id": session_id, **bundle}
+    except requests.HTTPError as exc:
+        logger.exception("Chat/questions background fetch failed", extra={"session_id": session_id})
+        return build_failed_job_result(
+            format_livestorm_http_error(exc, "Chat & Questions"),
+            details=build_http_error_debug_details(exc, "Chat & Questions"),
+        )
+    except requests.RequestException as exc:
+        logger.exception("Chat/questions background network error", extra={"session_id": session_id})
+        return build_failed_job_result(
+            f"Chat & Questions network error: {exc}",
+            details=build_request_exception_debug_details(exc, "Chat & Questions"),
+        )
+
+
+def apply_chat_questions_job_result(job_result: Dict[str, Any]) -> None:
+    if not job_result.get("ok"):
+        set_api_error_details("Chat & Questions", job_result.get("details"))
+        set_api_error_message(str(job_result.get("message") or "Chat & Questions request failed."))
+        st.session_state["fetch_in_progress"] = False
+        st.session_state["chat_fetch_job_id"] = ""
+        clear_background_notice()
+        return
+
+    clear_analysis_output()
+    clear_api_error_details()
+    clear_background_notice()
+    st.session_state["chat_payload"] = job_result.get("chat_payload")
+    st.session_state["chat_df"] = job_result.get("chat_df")
+    st.session_state["questions_payload"] = job_result.get("questions_payload")
+    st.session_state["questions_df"] = job_result.get("questions_df")
+    st.session_state["current_session_id"] = job_result.get("session_id", "")
+    st.session_state["last_fetched_chat_session_id"] = job_result.get("session_id", "")
+    mark_analysis_source_defaults(st.session_state, include_chat=True)
+    if isinstance(st.session_state.get("questions_df"), pd.DataFrame):
+        mark_analysis_source_defaults(st.session_state, include_questions=True)
+    st.session_state["fetch_in_progress"] = False
+    st.session_state["chat_fetch_job_id"] = ""
+
+
+def apply_transcript_success(session_id: str, verbose: bool, transcript_payload: Dict[str, Any]) -> None:
+    clear_analysis_output()
+    clear_api_error_details()
+    clear_background_notice()
+    transcript_text = build_transcript_display_text(transcript_payload)
+    st.session_state["transcript_payload"] = transcript_payload
+    st.session_state["transcript_text"] = transcript_text
+    st.session_state["last_fetched_transcript_signature"] = build_transcript_request_signature(
+        str(session_id or ""),
+        bool(verbose),
+    )
+    st.session_state["current_session_id"] = str(session_id or "")
+    st.session_state["transcript_fetch_in_progress"] = False
+    st.session_state["transcript_job_id"] = ""
+    st.session_state["transcript_job_status"] = "completed"
+    st.session_state["transcript_job_started_at"] = 0.0
+    mark_analysis_source_defaults(st.session_state, include_transcript=True)
+
+
+def fail_transcript_job(message: str, details: Dict[str, Any] | None = None, *, status: str = "failed") -> None:
+    set_api_error_details("Transcript", details)
+    set_api_error_message(message)
+    st.session_state["transcript_fetch_in_progress"] = False
+    st.session_state["transcript_job_status"] = status
+    st.session_state["transcript_job_id"] = ""
+    st.session_state["transcript_job_started_at"] = 0.0
+    clear_background_notice()
+
+
+def render_background_jobs_panel() -> None:
+    chat_job_id = str(st.session_state.get("chat_fetch_job_id") or "").strip()
+
+    def render_panel() -> None:
+        active_labels: List[str] = []
+
+        if chat_job_id:
+            snapshot = job_manager.get(chat_job_id)
+            if snapshot and snapshot.get("done"):
+                result = snapshot.get("result")
+                if isinstance(result, dict):
+                    apply_chat_questions_job_result(result)
+                elif snapshot.get("exception") is not None:
+                    apply_chat_questions_job_result(
+                        build_failed_job_result(
+                            "Chat & Questions background job failed unexpectedly.",
+                            details={"exception_type": type(snapshot["exception"]).__name__, "message": str(snapshot["exception"])},
+                        )
+                    )
+                job_manager.discard(chat_job_id)
+                st.rerun()
+            elif snapshot:
+                active_labels.append("Fetching chat & questions...")
+            else:
+                st.session_state["fetch_in_progress"] = False
+                st.session_state["chat_fetch_job_id"] = ""
+
+        for label in active_labels:
+            with st.spinner(label):
+                st.caption(" ")
+
+    if hasattr(st, "fragment") and chat_job_id:
+        @st.fragment(run_every="2s")
+        def _jobs_fragment() -> None:
+            render_panel()
+
+        _jobs_fragment()
+    else:
+        render_panel()
+
+
+def poll_transcript_job_if_needed() -> None:
+    if not st.session_state.get("transcript_fetch_in_progress", False):
+        return
+
+    transcript_api_key = get_runtime_secret("API_AUTH_KEY", "")
+    job_id = str(st.session_state.get("transcript_job_id") or "").strip()
+    session_id = str(st.session_state.get("current_session_id") or "").strip()
+    verbose = bool(st.session_state.get("transcript_verbose", False))
+
+    if not transcript_api_key or not job_id:
+        return
+
+    started_at = float(st.session_state.get("transcript_job_started_at") or 0.0)
+    if started_at and (time.time() - started_at) > (15 * 60):
+        fail_transcript_job("Transcript job timed out after 15 minutes.", {"job_id": job_id, "status": "timeout"}, status="timeout")
+        st.rerun()
+
+    try:
+        job_payload = get_transcript_job(transcript_api_key, job_id)
+    except requests.HTTPError as exc:
+        logger.exception("Transcript job polling failed", extra={"session_id": session_id, "job_id": job_id})
+        status_code = exc.response.status_code if exc.response is not None else None
+        if status_code is not None and status_code < 500 and status_code not in (408, 429):
+            fail_transcript_job(
+                format_generic_http_error(exc, "Transcript"),
+                build_http_error_debug_details(exc, "Transcript"),
+            )
+            st.rerun()
+        return
+    except requests.RequestException:
+        return
+
+    status = str(job_payload.get("status") or "").strip().lower()
+    if status:
+        st.session_state["transcript_job_status"] = status
+
+    if status == "completed":
+        result = job_payload.get("result")
+        transcript = result.get("transcript") if isinstance(result, dict) else None
+        if isinstance(transcript, dict):
+            apply_transcript_success(session_id, verbose, {"transcript": transcript})
+        else:
+            fail_transcript_job(
+                "Transcript job completed without a transcript result.",
+                build_transcript_job_debug_details(job_payload, "Transcript"),
+            )
+        st.rerun()
+
+    if status == "failed":
+        error = job_payload.get("error")
+        message = error.get("message") if isinstance(error, dict) else "Transcript job failed."
+        fail_transcript_job(message, build_transcript_job_debug_details(job_payload, "Transcript"))
+        st.rerun()
+
+
+def render_transcript_job_poller() -> None:
+    if not st.session_state.get("transcript_fetch_in_progress", False):
+        return
+    if not str(st.session_state.get("transcript_job_id") or "").strip():
+        return
+
+    if hasattr(st, "fragment"):
+        @st.fragment(run_every=f"{TRANSCRIPT_POLL_INTERVAL_SECONDS}s")
+        def _transcript_poll_fragment() -> None:
+            poll_transcript_job_if_needed()
+
+        _transcript_poll_fragment()
+    else:
+        poll_transcript_job_if_needed()
 
 
 configure_page()
@@ -123,6 +316,7 @@ current_transcript_signature = build_transcript_request_signature(
     active_session_id,
     bool(st.session_state.get("transcript_verbose", False)),
 )
+form_locked = bool(st.session_state.get("transcript_fetch_in_progress", False))
 
 if controls_col is not None:
     with controls_col:
@@ -134,6 +328,7 @@ if controls_col is not None:
             type="password",
             help="Your Livestorm API key",
             key="api_key_input",
+            disabled=form_locked,
         )
         has_api_key = bool(api_key.strip())
         transcript_api_key = get_runtime_secret("API_AUTH_KEY", "")
@@ -145,7 +340,7 @@ if controls_col is not None:
             options=INPUT_MODE_OPTIONS,
             index=0 if st.session_state.get("input_mode", INPUT_MODE_OPTIONS[0]) == INPUT_MODE_OPTIONS[0] else 1,
             horizontal=True,
-            disabled=not has_any_connection_key,
+            disabled=(not has_any_connection_key) or form_locked,
             key="input_mode",
         )
 
@@ -158,16 +353,18 @@ if controls_col is not None:
         if input_mode == "Session ID":
             session_id = st.text_input(
                 "Session ID",
+                value=st.session_state.get("session_id_input", ""),
                 help="Livestorm session ID",
-                disabled=not has_any_connection_key,
+                disabled=(not has_any_connection_key) or form_locked,
                 key="session_id_input",
             )
             session_id_valid = bool(SESSION_ID_PATTERN.match(session_id.strip()))
         else:
             event_id = st.text_input(
                 "Event ID",
+                value=st.session_state.get("event_id_input", ""),
                 help="Livestorm event ID",
-                disabled=not has_api_key,
+                disabled=(not has_api_key) or form_locked,
                 key="event_id_input",
             )
             event_id_valid = bool(EVENT_ID_PATTERN.match(event_id.strip()))
@@ -183,7 +380,7 @@ if controls_col is not None:
                     "Load Past Sessions",
                     key="load_sessions_btn",
                     type="primary",
-                    disabled=not has_api_key,
+                    disabled=(not has_api_key) or form_locked,
                 )
 
             event_sessions = st.session_state.get("event_sessions", [])
@@ -199,7 +396,7 @@ if controls_col is not None:
                     "Select a past session",
                     options=options,
                     format_func=lambda sid: session_labels.get(sid, sid),
-                    disabled=not bool(options),
+                    disabled=(not bool(options)) or form_locked,
                     key="selected_event_session_id",
                 )
                 if selected_session_from_event:
@@ -219,9 +416,23 @@ if controls_col is not None:
             bool(active_session_id)
             and st.session_state.get("last_fetched_transcript_signature", "") == current_transcript_signature
         )
+        transcript_job_in_progress = bool(st.session_state.get("transcript_job_id", ""))
+        chat_job_in_progress = bool(st.session_state.get("chat_fetch_job_id", ""))
 
-        fetch_disabled = (not has_api_key) or chat_request_already_fetched
-        transcript_fetch_disabled = (not has_transcript_api_key) or (not bool(active_session_id)) or transcript_request_already_fetched
+        fetch_disabled = (not has_api_key) or chat_request_already_fetched or chat_job_in_progress or form_locked
+        transcript_toggle_disabled = (
+            (not has_transcript_api_key)
+            or (not bool(active_session_id))
+            or transcript_job_in_progress
+            or form_locked
+        )
+        transcript_fetch_disabled = (
+            (not has_transcript_api_key)
+            or (not bool(active_session_id))
+            or transcript_request_already_fetched
+            or transcript_job_in_progress
+            or form_locked
+        )
         can_show_fetch_button = input_mode == "Session ID" or bool(active_session_id)
 
         if can_show_fetch_button:
@@ -255,7 +466,7 @@ if controls_col is not None:
                 st.checkbox(
                     "Verbose?",
                     key="transcript_verbose",
-                    disabled=transcript_fetch_disabled,
+                    disabled=transcript_toggle_disabled,
                     help="When checked the transcript will be generated timestamped.",
                 )
                 fetch_transcript_button = transcript_btn_placeholder.button(
@@ -327,16 +538,10 @@ if st.session_state.get("load_event_sessions_in_progress", False):
     st.session_state["load_event_sessions_in_progress"] = False
 
 if fetch_button:
-    st.session_state["fetch_in_progress"] = True
-    st.rerun()
-
-if fetch_transcript_button:
-    st.session_state["transcript_fetch_in_progress"] = True
-    st.rerun()
-
-if st.session_state.get("fetch_in_progress", False):
     previous_session_id = st.session_state.get("current_session_id", "")
     clear_analysis_output()
+    clear_api_error_details()
+    clear_background_notice()
     if previous_session_id and previous_session_id != active_session_id:
         st.session_state["questions_payload"] = None
         st.session_state["questions_df"] = None
@@ -344,133 +549,69 @@ if st.session_state.get("fetch_in_progress", False):
 
     if not api_key or not active_session_id:
         st.error("Please provide API key and a valid session selection.")
-        st.session_state["fetch_in_progress"] = False
-        st.rerun()
-
-    try:
-        with st.spinner("Fetching chat messages..."):
-            payload = fetch_chat_messages(api_key, active_session_id)
-    except requests.HTTPError as exc:
-        logger.exception("Chat fetch failed", extra={"session_id": active_session_id})
-        set_api_error_details("Chat", build_http_error_debug_details(exc, "Chat"))
-        set_api_error_message(format_livestorm_http_error(exc, "Chat"))
-        st.session_state["fetch_in_progress"] = False
-        st.rerun()
-    except requests.RequestException as exc:
-        logger.exception("Chat network error", extra={"session_id": active_session_id})
-        set_api_error_details("Chat", build_request_exception_debug_details(exc, "Chat"))
-        set_api_error_message(f"Chat network error: {exc}")
-        st.session_state["fetch_in_progress"] = False
-        st.rerun()
-
-    messages = extract_messages(payload)
-    fetched_successfully = False
-    if not messages:
-        st.warning("No messages found or unexpected response format.")
-        st.json(payload)
     else:
-        rows = [flatten_message(message) for message in messages]
-        df = clean_table_headers(pd.DataFrame(rows))
-        df = format_unix_datetime_columns(df)
-        df = drop_unwanted_columns(df)
-        st.session_state["chat_payload"] = payload
-        st.session_state["chat_df"] = df
+        st.session_state["fetch_in_progress"] = True
         st.session_state["current_session_id"] = active_session_id
-        mark_analysis_source_defaults(st.session_state, include_chat=True)
-        fetched_successfully = True
-        clear_api_error_details()
+        st.session_state["chat_fetch_job_id"] = job_manager.submit(
+            "chat_questions",
+            run_chat_questions_job,
+            context={"session_id": active_session_id},
+            api_key=api_key,
+            session_id=active_session_id,
+        )
+    st.rerun()
 
-    try:
-        with st.spinner("Fetching session questions..."):
-            raw_questions_payload = fetch_session_questions(api_key, active_session_id)
-    except requests.HTTPError as exc:
-        logger.exception("Questions fetch failed", extra={"session_id": active_session_id})
-        set_api_error_details("Questions", build_http_error_debug_details(exc, "Questions"))
-        set_api_error_message(format_livestorm_http_error(exc, "Questions"))
-        raw_questions_payload = None
-    except requests.RequestException as exc:
-        logger.exception("Questions network error", extra={"session_id": active_session_id})
-        set_api_error_details("Questions", build_request_exception_debug_details(exc, "Questions"))
-        set_api_error_message(f"Questions network error: {exc}")
-        raw_questions_payload = None
-
-    if isinstance(raw_questions_payload, dict):
-        raw_questions = extract_questions(raw_questions_payload)
-        if not raw_questions:
-            st.session_state["questions_payload"] = raw_questions_payload
-            st.session_state["questions_df"] = pd.DataFrame()
-        else:
-            people_lookup = extract_included_people(raw_questions_payload)
-            question_rows = [flatten_question(question, people_lookup) for question in raw_questions]
-            qdf = clean_table_headers(pd.DataFrame(question_rows))
-            qdf = format_unix_datetime_columns(qdf)
-            qdf = clean_questions_table(qdf)
-            st.session_state["questions_payload"] = raw_questions_payload
-            st.session_state["questions_df"] = qdf
-        if isinstance(st.session_state.get("questions_df"), pd.DataFrame):
-            mark_analysis_source_defaults(st.session_state, include_questions=True)
-        if fetched_successfully:
-            st.session_state["last_fetched_chat_session_id"] = active_session_id
-
-    st.session_state["fetch_in_progress"] = False
-    if fetched_successfully:
-        st.rerun()
-
-if st.session_state.get("transcript_fetch_in_progress", False):
+if fetch_transcript_button:
     previous_session_id = st.session_state.get("current_session_id", "")
     clear_analysis_output()
+    clear_api_error_details()
+    clear_background_notice()
     if previous_session_id and previous_session_id != active_session_id:
         reset_chat_question_state()
 
     transcript_api_key = get_runtime_secret("API_AUTH_KEY", "")
     if not transcript_api_key:
         st.error("Transcript fetch skipped: missing `API_AUTH_KEY` in environment.")
-        st.session_state["transcript_fetch_in_progress"] = False
-        st.rerun()
-    if not active_session_id:
+    elif not active_session_id:
         st.error("Please select a valid session before fetching the transcript.")
-        st.session_state["transcript_fetch_in_progress"] = False
-        st.rerun()
-
-    try:
-        transcript_payload = fetch_session_transcript(
-            transcript_api_key,
-            active_session_id,
-            verbose=bool(st.session_state.get("transcript_verbose", False)),
-        )
-    except requests.HTTPError as exc:
-        logger.exception(
-            "Transcript fetch failed",
-            extra={"session_id": active_session_id, "verbose": bool(st.session_state.get("transcript_verbose", False))},
-        )
-        set_api_error_details("Transcript", build_http_error_debug_details(exc, "Transcript"))
-        set_api_error_message(format_generic_http_error(exc, "Transcript"))
-        st.session_state["transcript_fetch_in_progress"] = False
-        st.rerun()
-    except requests.RequestException as exc:
-        logger.exception(
-            "Transcript network error",
-            extra={"session_id": active_session_id, "verbose": bool(st.session_state.get("transcript_verbose", False))},
-        )
-        set_api_error_details("Transcript", build_request_exception_debug_details(exc, "Transcript"))
-        set_api_error_message(f"Transcript network error: {exc}")
-        st.session_state["transcript_fetch_in_progress"] = False
-        st.rerun()
-
-    transcript_text = build_transcript_display_text(transcript_payload)
-    if not transcript_text:
-        st.warning("Transcript response was received, but no transcript text was found.")
-
-    st.session_state["transcript_payload"] = transcript_payload
-    st.session_state["transcript_text"] = transcript_text
-    st.session_state["last_fetched_transcript_signature"] = build_transcript_request_signature(
-        active_session_id,
-        bool(st.session_state.get("transcript_verbose", False)),
-    )
-    st.session_state["current_session_id"] = active_session_id
-    mark_analysis_source_defaults(st.session_state, include_transcript=True)
-    clear_api_error_details()
-    st.session_state["transcript_fetch_in_progress"] = False
+    else:
+        verbose = bool(st.session_state.get("transcript_verbose", False))
+        st.session_state["transcript_fetch_in_progress"] = True
+        st.session_state["current_session_id"] = active_session_id
+        st.session_state["transcript_payload"] = None
+        st.session_state["transcript_text"] = ""
+        try:
+            job_payload = create_transcript_job(transcript_api_key, active_session_id, timestamped=verbose)
+        except requests.HTTPError as exc:
+            logger.exception(
+                "Transcript job creation failed",
+                extra={"session_id": active_session_id, "verbose": verbose},
+            )
+            fail_transcript_job(
+                format_generic_http_error(exc, "Transcript"),
+                build_http_error_debug_details(exc, "Transcript"),
+            )
+        except requests.RequestException as exc:
+            logger.exception(
+                "Transcript job creation network error",
+                extra={"session_id": active_session_id, "verbose": verbose},
+            )
+            fail_transcript_job(
+                f"Transcript network error: {exc}",
+                build_request_exception_debug_details(exc, "Transcript"),
+            )
+        else:
+            job_id = str(job_payload.get("job_id") or "").strip()
+            if not job_id:
+                fail_transcript_job(
+                    "Transcript job was created without a job ID.",
+                    build_transcript_job_debug_details(job_payload, "Transcript"),
+                )
+            else:
+                st.session_state["transcript_job_id"] = job_id
+                st.session_state["transcript_job_status"] = str(job_payload.get("status") or "queued").strip().lower() or "queued"
+                st.session_state["transcript_job_started_at"] = time.time()
+                poll_transcript_job_if_needed()
     st.rerun()
 
 payload = st.session_state.get("chat_payload")
@@ -482,13 +623,21 @@ transcript_text = st.session_state.get("transcript_text", "")
 analysis_md = st.session_state.get("analysis_md", "")
 analysis_ran = st.session_state.get("analysis_ran", False)
 current_session_id = st.session_state.get("current_session_id") or active_session_id
+transcript_loading = bool(st.session_state.get("transcript_fetch_in_progress", False) and st.session_state.get("transcript_job_id", ""))
 
 with main_col:
+    render_transcript_job_poller()
+    render_background_jobs_panel()
     transcript_available = isinstance(transcript_payload, dict)
     chat_available = isinstance(df, pd.DataFrame)
     questions_available = isinstance(questions_df, pd.DataFrame)
 
-    render_transcript_block(transcript_payload, transcript_text, current_session_id)
+    render_transcript_block(
+        transcript_payload,
+        transcript_text,
+        current_session_id,
+        is_loading=transcript_loading,
+    )
     render_chat_questions_block(df, questions_df, current_session_id)
     analyze_button = render_analysis_block(
         current_session_id=current_session_id,

@@ -3,8 +3,11 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
-import plotly.express as px
 import streamlit as st
+try:
+    import plotly.express as px
+except ModuleNotFoundError:  # pragma: no cover
+    px = None
 
 from livestorm_app.config import OUTPUT_LANGUAGE_LABELS
 from livestorm_app.services import (
@@ -15,9 +18,25 @@ from livestorm_app.services import (
 )
 
 
+PLOTLY_AVAILABLE = px is not None
+
+
+def render_chart_fallback(message: str, data: Optional[pd.DataFrame] = None, columns: Optional[List[str]] = None) -> None:
+    st.info(message)
+    if isinstance(data, pd.DataFrame) and not data.empty:
+        display_df = data
+        if columns:
+            keep_columns = [column for column in columns if column in display_df.columns]
+            if keep_columns:
+                display_df = display_df[keep_columns]
+        st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+
 def brand_bar_chart(
     data: pd.DataFrame, x_field: str, y_field: str, x_title: str, y_title: str, tooltip_fields: List[str]
 ):
+    if not PLOTLY_AVAILABLE:
+        return None
     fig = px.bar(
         data,
         x=x_field,
@@ -43,6 +62,8 @@ def brand_bar_chart(
 def brand_line_chart(
     data: pd.DataFrame, x_field: str, y_field: str, x_title: str, y_title: str, tooltip_fields: List[str]
 ):
+    if not PLOTLY_AVAILABLE:
+        return None
     fig = px.line(
         data,
         x=x_field,
@@ -112,28 +133,31 @@ def render_chat_questions_dashboard(df: pd.DataFrame, questions_df: Optional[pd.
 
         combined_top = pd.concat([top_chatters, top_askers], ignore_index=True)
         if not combined_top.empty:
-            top_chart = px.bar(
-                combined_top,
-                x="person_id",
-                y="count",
-                color="kind",
-                barmode="group",
-                color_discrete_map={"Messages": "#8FD0DE", "Questions": "#F4B942"},
-                hover_data=["person_id", "count", "kind"],
-            )
-            top_chart.update_layout(
-                height=300,
-                margin=dict(l=8, r=8, t=8, b=8),
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(0,0,0,0)",
-                font=dict(color="#EAF1F3"),
-                xaxis_title="Author / Asker ID",
-                yaxis_title="Count",
-                legend_title_text="Series",
-            )
-            top_chart.update_xaxes(gridcolor="#2F4B53", zerolinecolor="#2F4B53")
-            top_chart.update_yaxes(gridcolor="#2F4B53", zerolinecolor="#2F4B53")
-            st.plotly_chart(top_chart, use_container_width=True, config={"displayModeBar": False, "displaylogo": False})
+            if PLOTLY_AVAILABLE:
+                top_chart = px.bar(
+                    combined_top,
+                    x="person_id",
+                    y="count",
+                    color="kind",
+                    barmode="group",
+                    color_discrete_map={"Messages": "#8FD0DE", "Questions": "#F4B942"},
+                    hover_data=["person_id", "count", "kind"],
+                )
+                top_chart.update_layout(
+                    height=300,
+                    margin=dict(l=8, r=8, t=8, b=8),
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    font=dict(color="#EAF1F3"),
+                    xaxis_title="Author / Asker ID",
+                    yaxis_title="Count",
+                    legend_title_text="Series",
+                )
+                top_chart.update_xaxes(gridcolor="#2F4B53", zerolinecolor="#2F4B53")
+                top_chart.update_yaxes(gridcolor="#2F4B53", zerolinecolor="#2F4B53")
+                st.plotly_chart(top_chart, use_container_width=True, config={"displayModeBar": False, "displaylogo": False})
+            else:
+                render_chart_fallback("Install `plotly` to view charts.", combined_top, ["person_id", "count", "kind"])
         else:
             st.info("Not enough contributor data to chart.")
 
@@ -167,63 +191,79 @@ def render_chat_questions_dashboard(df: pd.DataFrame, questions_df: Optional[pd.
 
         if timeline_frames:
             timeline = pd.concat(timeline_frames, ignore_index=True)
-            timeline_chart = px.line(
-                timeline,
-                x="minute",
-                y="count",
-                color="kind",
-                markers=True,
-                color_discrete_map={"Messages": "#8FD0DE", "Questions": "#F4B942"},
-                hover_data=["minute", "count", "kind"],
-            )
-            timeline_chart.update_layout(
-                height=300,
-                margin=dict(l=8, r=8, t=8, b=8),
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(0,0,0,0)",
-                font=dict(color="#EAF1F3"),
-                xaxis_title="Time (UTC)",
-                yaxis_title="Count",
-                legend_title_text="Series",
-            )
-            timeline_chart.update_xaxes(gridcolor="#2F4B53", zerolinecolor="#2F4B53")
-            timeline_chart.update_yaxes(gridcolor="#2F4B53", zerolinecolor="#2F4B53")
-            st.plotly_chart(timeline_chart, use_container_width=True, config={"displayModeBar": False, "displaylogo": False})
+            if PLOTLY_AVAILABLE:
+                timeline_chart = px.line(
+                    timeline,
+                    x="minute",
+                    y="count",
+                    color="kind",
+                    markers=True,
+                    color_discrete_map={"Messages": "#8FD0DE", "Questions": "#F4B942"},
+                    hover_data=["minute", "count", "kind"],
+                )
+                timeline_chart.update_layout(
+                    height=300,
+                    margin=dict(l=8, r=8, t=8, b=8),
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    font=dict(color="#EAF1F3"),
+                    xaxis_title="Time (UTC)",
+                    yaxis_title="Count",
+                    legend_title_text="Series",
+                )
+                timeline_chart.update_xaxes(gridcolor="#2F4B53", zerolinecolor="#2F4B53")
+                timeline_chart.update_yaxes(gridcolor="#2F4B53", zerolinecolor="#2F4B53")
+                st.plotly_chart(timeline_chart, use_container_width=True, config={"displayModeBar": False, "displaylogo": False})
+            else:
+                render_chart_fallback("Install `plotly` to view charts.", timeline, ["minute", "count", "kind"])
         else:
             st.info("No valid timestamp data to chart.")
 
         st.markdown("**Question Response Coverage**")
         if total_questions > 0:
             status_df = pd.DataFrame({"status": ["Answered", "Unanswered"], "count": [answered_count, unanswered_count]})
-            status_chart = px.bar(
-                status_df,
-                x="status",
-                y="count",
-                color="status",
-                color_discrete_map={"Answered": "#5AC77A", "Unanswered": "#F06D6D"},
-                hover_data=["status", "count"],
-            )
-            status_chart.update_layout(
-                height=260,
-                margin=dict(l=8, r=8, t=8, b=8),
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(0,0,0,0)",
-                font=dict(color="#EAF1F3"),
-                xaxis_title="Status",
-                yaxis_title="Questions",
-                showlegend=False,
-            )
-            status_chart.update_xaxes(gridcolor="#2F4B53", zerolinecolor="#2F4B53")
-            status_chart.update_yaxes(gridcolor="#2F4B53", zerolinecolor="#2F4B53")
-            st.plotly_chart(status_chart, use_container_width=True, config={"displayModeBar": False, "displaylogo": False})
+            if PLOTLY_AVAILABLE:
+                status_chart = px.bar(
+                    status_df,
+                    x="status",
+                    y="count",
+                    color="status",
+                    color_discrete_map={"Answered": "#5AC77A", "Unanswered": "#F06D6D"},
+                    hover_data=["status", "count"],
+                )
+                status_chart.update_layout(
+                    height=260,
+                    margin=dict(l=8, r=8, t=8, b=8),
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    font=dict(color="#EAF1F3"),
+                    xaxis_title="Status",
+                    yaxis_title="Questions",
+                    showlegend=False,
+                )
+                status_chart.update_xaxes(gridcolor="#2F4B53", zerolinecolor="#2F4B53")
+                status_chart.update_yaxes(gridcolor="#2F4B53", zerolinecolor="#2F4B53")
+                st.plotly_chart(status_chart, use_container_width=True, config={"displayModeBar": False, "displaylogo": False})
+            else:
+                render_chart_fallback("Install `plotly` to view charts.", status_df, ["status", "count"])
         else:
             st.info("No questions fetched yet.")
 
 
-def render_transcript_block(transcript_payload: Optional[Dict[str, Any]], transcript_text: str, current_session_id: str) -> None:
-    with st.expander("Transcript", expanded=bool(transcript_payload)):
+def render_transcript_block(
+    transcript_payload: Optional[Dict[str, Any]],
+    transcript_text: str,
+    current_session_id: str,
+    is_loading: bool = False,
+) -> None:
+    label = "Transcript (loading...)" if is_loading else "Transcript"
+    with st.expander(label, expanded=bool(transcript_payload) or is_loading):
+        if is_loading:
+            with st.spinner("Loading transcript..."):
+                st.caption("Transcript is loading...")
         if not isinstance(transcript_payload, dict):
-            st.caption("Fetch a transcript to view the transcript text.")
+            if not is_loading:
+                st.caption("Fetch a transcript to view the transcript text.")
             return
 
         transcript_insights = build_transcript_insights(transcript_payload)
@@ -240,44 +280,51 @@ def render_transcript_block(transcript_payload: Optional[Dict[str, Any]], transc
             with st.container():
                 st.markdown("**Speaking Pace Curve**")
                 if not pace_df.empty:
-                    pace_chart = px.line(
-                        pace_df,
-                        x="time_seconds",
-                        y="segment_wpm",
-                        markers=True,
-                        color_discrete_sequence=["#8FD0DE"],
-                        hover_data=["time_label", "duration_seconds", "word_count", "text"],
-                    )
-                    pace_chart.update_traces(line=dict(width=3), marker=dict(size=7, color="#F4B942"), line_shape="spline")
-                    pace_chart.update_layout(
-                        height=290,
-                        margin=dict(l=8, r=8, t=8, b=8),
-                        paper_bgcolor="rgba(0,0,0,0)",
-                        plot_bgcolor="rgba(0,0,0,0)",
-                        font=dict(color="#EAF1F3"),
-                        xaxis_title="Transcript time (sec)",
-                        yaxis_title="Words per minute",
-                    )
-                    pace_chart.update_xaxes(gridcolor="#2F4B53", zerolinecolor="#2F4B53")
-                    pace_chart.update_yaxes(gridcolor="#2F4B53", zerolinecolor="#2F4B53")
-                    st.plotly_chart(pace_chart, use_container_width=True, config={"displayModeBar": False, "displaylogo": False})
+                    if PLOTLY_AVAILABLE:
+                        pace_chart = px.line(
+                            pace_df,
+                            x="time_seconds",
+                            y="segment_wpm",
+                            markers=True,
+                            color_discrete_sequence=["#8FD0DE"],
+                            hover_data=["time_label", "duration_seconds", "word_count", "text"],
+                        )
+                        pace_chart.update_traces(line=dict(width=3), marker=dict(size=7, color="#F4B942"), line_shape="spline")
+                        pace_chart.update_layout(
+                            height=290,
+                            margin=dict(l=8, r=8, t=8, b=8),
+                            paper_bgcolor="rgba(0,0,0,0)",
+                            plot_bgcolor="rgba(0,0,0,0)",
+                            font=dict(color="#EAF1F3"),
+                            xaxis_title="Transcript time (sec)",
+                            yaxis_title="Words per minute",
+                        )
+                        pace_chart.update_xaxes(gridcolor="#2F4B53", zerolinecolor="#2F4B53")
+                        pace_chart.update_yaxes(gridcolor="#2F4B53", zerolinecolor="#2F4B53")
+                        st.plotly_chart(pace_chart, use_container_width=True, config={"displayModeBar": False, "displaylogo": False})
+                    else:
+                        render_chart_fallback("Install `plotly` to view charts.", pace_df, ["time_label", "segment_wpm", "word_count"])
                 else:
                     st.info("Verbose transcript timing is required to chart speaking pace.")
 
                 st.markdown("**Meaningful Words**")
                 if not terms_df.empty:
-                    st.plotly_chart(
-                        brand_bar_chart(
-                            terms_df,
-                            x_field="term",
-                            y_field="count",
-                            x_title="Word",
-                            y_title="Count",
-                            tooltip_fields=["term", "count"],
-                        ),
-                        use_container_width=True,
-                        config={"displayModeBar": False, "displaylogo": False},
+                    terms_chart = brand_bar_chart(
+                        terms_df,
+                        x_field="term",
+                        y_field="count",
+                        x_title="Word",
+                        y_title="Count",
+                        tooltip_fields=["term", "count"],
                     )
+                    if terms_chart is not None:
+                        st.plotly_chart(
+                            terms_chart,
+                            use_container_width=True,
+                            config={"displayModeBar": False, "displaylogo": False},
+                        )
+                    else:
+                        render_chart_fallback("Install `plotly` to view charts.", terms_df, ["term", "count"])
                 else:
                     st.info("Not enough transcript text to extract meaningful terms.")
 
@@ -408,7 +455,7 @@ def render_analysis_block(
         controls_col1, controls_col2 = st.columns([1.2, 1.8])
         with controls_col1:
             st.radio(
-                "Model output language",
+                "Output Language",
                 options=list(OUTPUT_LANGUAGE_LABELS.keys()),
                 format_func=lambda choice: OUTPUT_LANGUAGE_LABELS.get(choice, choice),
                 horizontal=True,
@@ -451,59 +498,66 @@ def render_analysis_block(
 
                 st.markdown("**Content Pace And Audience Activity**")
                 if not combined_timeline_df.empty:
-                    activity_chart = px.line(
-                        combined_timeline_df,
-                        x="bucket_start_pct",
-                        y="transcript_wpm",
-                        markers=True,
-                        color_discrete_sequence=["#8FD0DE"],
-                        hover_data=None,
-                    )
-                    activity_chart.update_traces(
-                        name="Transcript pace",
-                        line=dict(width=3),
-                        marker=dict(size=7),
-                        hovertemplate="WPM: %{y:.1f}<extra></extra>",
-                    )
-                    activity_chart.add_bar(
-                        x=combined_timeline_df["bucket_start_pct"],
-                        y=combined_timeline_df["chat_messages"],
-                        name="Chat messages",
-                        marker_color="#F4B942",
-                        opacity=0.45,
-                        hovertemplate="Chat messages: %{y:.0f}<extra></extra>",
-                    )
-                    activity_chart.add_scatter(
-                        x=combined_timeline_df["bucket_start_pct"],
-                        y=combined_timeline_df["question_count"],
-                        name="Questions",
-                        mode="markers+lines",
-                        marker=dict(color="#F06D6D", size=10, symbol="diamond"),
-                        line=dict(color="#F06D6D", width=2, dash="dot"),
-                        yaxis="y2",
-                        hovertemplate="Questions: %{y:.0f}<extra></extra>",
-                    )
-                    activity_chart.update_layout(
-                        height=360,
-                        margin=dict(l=8, r=8, t=8, b=8),
-                        paper_bgcolor="rgba(0,0,0,0)",
-                        plot_bgcolor="rgba(0,0,0,0)",
-                        font=dict(color="#EAF1F3"),
-                        xaxis_title="Session timeline",
-                        yaxis_title="Transcript pace (WPM)",
-                        yaxis2=dict(
-                            title="Questions",
-                            overlaying="y",
-                            side="right",
-                            showgrid=False,
-                            rangemode="tozero",
-                        ),
-                        legend=dict(orientation="h", y=1.08, x=0),
-                        barmode="overlay",
-                    )
-                    activity_chart.update_xaxes(gridcolor="#2F4B53", zerolinecolor="#2F4B53")
-                    activity_chart.update_yaxes(gridcolor="#2F4B53", zerolinecolor="#2F4B53")
-                    st.plotly_chart(activity_chart, use_container_width=True, config={"displayModeBar": False, "displaylogo": False})
+                    if PLOTLY_AVAILABLE:
+                        activity_chart = px.line(
+                            combined_timeline_df,
+                            x="bucket_start_pct",
+                            y="transcript_wpm",
+                            markers=True,
+                            color_discrete_sequence=["#8FD0DE"],
+                            hover_data=None,
+                        )
+                        activity_chart.update_traces(
+                            name="Transcript pace",
+                            line=dict(width=3),
+                            marker=dict(size=7),
+                            hovertemplate="WPM: %{y:.1f}<extra></extra>",
+                        )
+                        activity_chart.add_bar(
+                            x=combined_timeline_df["bucket_start_pct"],
+                            y=combined_timeline_df["chat_messages"],
+                            name="Chat messages",
+                            marker_color="#F4B942",
+                            opacity=0.45,
+                            hovertemplate="Chat messages: %{y:.0f}<extra></extra>",
+                        )
+                        activity_chart.add_scatter(
+                            x=combined_timeline_df["bucket_start_pct"],
+                            y=combined_timeline_df["question_count"],
+                            name="Questions",
+                            mode="markers+lines",
+                            marker=dict(color="#F06D6D", size=10, symbol="diamond"),
+                            line=dict(color="#F06D6D", width=2, dash="dot"),
+                            yaxis="y2",
+                            hovertemplate="Questions: %{y:.0f}<extra></extra>",
+                        )
+                        activity_chart.update_layout(
+                            height=360,
+                            margin=dict(l=8, r=8, t=8, b=8),
+                            paper_bgcolor="rgba(0,0,0,0)",
+                            plot_bgcolor="rgba(0,0,0,0)",
+                            font=dict(color="#EAF1F3"),
+                            xaxis_title="Session timeline",
+                            yaxis_title="Transcript pace (WPM)",
+                            yaxis2=dict(
+                                title="Questions",
+                                overlaying="y",
+                                side="right",
+                                showgrid=False,
+                                rangemode="tozero",
+                            ),
+                            legend=dict(orientation="h", y=1.08, x=0),
+                            barmode="overlay",
+                        )
+                        activity_chart.update_xaxes(gridcolor="#2F4B53", zerolinecolor="#2F4B53")
+                        activity_chart.update_yaxes(gridcolor="#2F4B53", zerolinecolor="#2F4B53")
+                        st.plotly_chart(activity_chart, use_container_width=True, config={"displayModeBar": False, "displaylogo": False})
+                    else:
+                        render_chart_fallback(
+                            "Install `plotly` to view charts.",
+                            combined_timeline_df,
+                            ["bucket_start_pct", "transcript_wpm", "chat_messages", "question_count"],
+                        )
                 else:
                     st.info("Chat/questions timestamps could not be aligned into a shared progress view.")
 
