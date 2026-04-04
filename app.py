@@ -407,6 +407,9 @@ with main_col:
         transcript_available=transcript_available,
         chat_available=chat_available,
         questions_available=questions_available,
+        transcript_payload=transcript_payload,
+        chat_df=df,
+        questions_df=questions_df,
     )
 
 if analyze_button:

@@ -9,7 +9,9 @@ import streamlit as st
 from livestorm_app.config import OUTPUT_LANGUAGE_LABELS
 from livestorm_app.services import (
     analysis_markdown_to_pdf_bytes,
-    extract_common_terms,
+    build_cross_source_insights,
+    build_transcript_insights,
+    format_seconds_label,
 )
 
 
@@ -135,24 +137,6 @@ def render_chat_questions_dashboard(df: pd.DataFrame, questions_df: Optional[pd.
         else:
             st.info("Not enough contributor data to chart.")
 
-        st.markdown("**Common Terms (Chat Messages)**")
-        terms_df = extract_common_terms(df)
-        if not terms_df.empty:
-            st.plotly_chart(
-                brand_bar_chart(
-                    terms_df,
-                    x_field="term",
-                    y_field="count",
-                    x_title="Term",
-                    y_title="Count",
-                    tooltip_fields=["term", "count"],
-                ),
-                use_container_width=True,
-                config={"displayModeBar": False, "displaylogo": False},
-            )
-        else:
-            st.info("Not enough textual data for term analysis.")
-
     with chart_col2:
         st.markdown("**Activity Over Time (UTC)**")
         timeline_frames: List[pd.DataFrame] = []
@@ -242,14 +226,68 @@ def render_transcript_block(transcript_payload: Optional[Dict[str, Any]], transc
             st.caption("Fetch a transcript to view the transcript text.")
             return
 
+        transcript_insights = build_transcript_insights(transcript_payload)
+        summary = transcript_insights.get("summary", {})
+        segments_df = transcript_insights.get("segments_df", pd.DataFrame())
+        timeline_df = transcript_insights.get("timeline_df", pd.DataFrame())
+        pace_df = transcript_insights.get("pace_df", pd.DataFrame())
+        terms_df = transcript_insights.get("terms_df", pd.DataFrame())
+        if isinstance(segments_df, pd.DataFrame) and not segments_df.empty:
+            metric_col1, metric_col2 = st.columns(2)
+            metric_col1.metric("Words", f"{summary.get('total_words', 0)}")
+            metric_col2.metric("Avg Pace", f"{summary.get('avg_words_per_minute', 0)} wpm")
+
+            with st.container():
+                st.markdown("**Speaking Pace Curve**")
+                if not pace_df.empty:
+                    pace_chart = px.line(
+                        pace_df,
+                        x="time_seconds",
+                        y="segment_wpm",
+                        markers=True,
+                        color_discrete_sequence=["#8FD0DE"],
+                        hover_data=["time_label", "duration_seconds", "word_count", "text"],
+                    )
+                    pace_chart.update_traces(line=dict(width=3), marker=dict(size=7, color="#F4B942"), line_shape="spline")
+                    pace_chart.update_layout(
+                        height=290,
+                        margin=dict(l=8, r=8, t=8, b=8),
+                        paper_bgcolor="rgba(0,0,0,0)",
+                        plot_bgcolor="rgba(0,0,0,0)",
+                        font=dict(color="#EAF1F3"),
+                        xaxis_title="Transcript time (sec)",
+                        yaxis_title="Words per minute",
+                    )
+                    pace_chart.update_xaxes(gridcolor="#2F4B53", zerolinecolor="#2F4B53")
+                    pace_chart.update_yaxes(gridcolor="#2F4B53", zerolinecolor="#2F4B53")
+                    st.plotly_chart(pace_chart, use_container_width=True, config={"displayModeBar": False, "displaylogo": False})
+                else:
+                    st.info("Verbose transcript timing is required to chart speaking pace.")
+
+                st.markdown("**Meaningful Words**")
+                if not terms_df.empty:
+                    st.plotly_chart(
+                        brand_bar_chart(
+                            terms_df,
+                            x_field="term",
+                            y_field="count",
+                            x_title="Word",
+                            y_title="Count",
+                            tooltip_fields=["term", "count"],
+                        ),
+                        use_container_width=True,
+                        config={"displayModeBar": False, "displaylogo": False},
+                    )
+                else:
+                    st.info("Not enough transcript text to extract meaningful terms.")
+
+            insight_bits = []
+            if summary.get("top_term"):
+                insight_bits.append(f"Top meaningful term: `{summary['top_term']}`")
+            if insight_bits:
+                st.caption(" | ".join(insight_bits))
+
         if transcript_text:
-            st.text_area(
-                "Transcript text",
-                value=transcript_text,
-                height=320,
-                disabled=True,
-                key=f"transcript_text_{current_session_id}",
-            )
             transcript_timestamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
             st.download_button(
                 label="Download Transcript JSON",
@@ -257,6 +295,37 @@ def render_transcript_block(transcript_payload: Optional[Dict[str, Any]], transc
                 file_name=f"livestorm-transcript-{current_session_id}-{transcript_timestamp}.json",
                 mime="application/json",
             )
+            if isinstance(segments_df, pd.DataFrame) and not segments_df.empty:
+                transcript_tab, segments_tab = st.tabs(["Transcript", "Segments"])
+                with transcript_tab:
+                    st.text_area(
+                        "Transcript text",
+                        value=transcript_text,
+                        height=320,
+                        disabled=True,
+                        key=f"transcript_text_tab_{current_session_id}",
+                    )
+                with segments_tab:
+                    display_segments = segments_df.copy()
+                    keep_columns = [
+                        col for col in [
+                            "start_label",
+                            "speaker",
+                            "duration_seconds",
+                            "word_count",
+                            "words_per_second",
+                            "text",
+                        ] if col in display_segments.columns
+                    ]
+                    st.dataframe(display_segments[keep_columns], use_container_width=True, hide_index=True)
+            else:
+                st.text_area(
+                    "Transcript text",
+                    value=transcript_text,
+                    height=320,
+                    disabled=True,
+                    key=f"transcript_text_{current_session_id}",
+                )
         else:
             st.info("Transcript payload fetched successfully, but there is no transcript text to display.")
 
@@ -310,6 +379,9 @@ def render_analysis_block(
     transcript_available: bool,
     chat_available: bool,
     questions_available: bool,
+    transcript_payload: Optional[Dict[str, Any]] = None,
+    chat_df: Optional[pd.DataFrame] = None,
+    questions_df: Optional[pd.DataFrame] = None,
 ) -> bool:
     with st.expander("Analysis", expanded=analysis_ran or analysis_md == ""):
         chat_questions_available = chat_available and questions_available
@@ -343,6 +415,14 @@ def render_analysis_block(
                 key="analysis_language",
             )
 
+        should_render_cross_source = bool(
+            st.session_state.get("analysis_include_transcript")
+            and st.session_state.get("analysis_include_chat_questions")
+            and transcript_available
+            and chat_questions_available
+            and isinstance(transcript_payload, dict)
+        )
+
         if st.session_state.get("analysis_in_progress", False):
             st.button(
                 "Running Analysis...",
@@ -358,6 +438,84 @@ def render_analysis_block(
                 type="primary",
                 disabled=not (transcript_available or chat_questions_available),
             )
+
+        if should_render_cross_source and analysis_ran:
+            transcript_insights = build_transcript_insights(transcript_payload)
+            has_verbose_segments = not transcript_insights.get("segments_df", pd.DataFrame()).empty
+            if has_verbose_segments:
+                cross_source = build_cross_source_insights(chat_df, questions_df, transcript_payload)
+                combined_timeline_df = cross_source.get("combined_timeline_df", pd.DataFrame())
+                reaction_moments_df = cross_source.get("reaction_moments_df", pd.DataFrame())
+                st.markdown("**Cross-Source Preview**")
+                st.caption("This preview aligns transcript progression with chat and question activity. It appears below the analysis button when both sources are selected.")
+
+                st.markdown("**Content Pace And Audience Activity**")
+                if not combined_timeline_df.empty:
+                    activity_chart = px.line(
+                        combined_timeline_df,
+                        x="bucket_start_pct",
+                        y="transcript_wpm",
+                        markers=True,
+                        color_discrete_sequence=["#8FD0DE"],
+                        hover_data=None,
+                    )
+                    activity_chart.update_traces(
+                        name="Transcript pace",
+                        line=dict(width=3),
+                        marker=dict(size=7),
+                        hovertemplate="WPM: %{y:.1f}<extra></extra>",
+                    )
+                    activity_chart.add_bar(
+                        x=combined_timeline_df["bucket_start_pct"],
+                        y=combined_timeline_df["chat_messages"],
+                        name="Chat messages",
+                        marker_color="#F4B942",
+                        opacity=0.45,
+                        hovertemplate="Chat messages: %{y:.0f}<extra></extra>",
+                    )
+                    activity_chart.add_scatter(
+                        x=combined_timeline_df["bucket_start_pct"],
+                        y=combined_timeline_df["question_count"],
+                        name="Questions",
+                        mode="markers+lines",
+                        marker=dict(color="#F06D6D", size=10, symbol="diamond"),
+                        line=dict(color="#F06D6D", width=2, dash="dot"),
+                        yaxis="y2",
+                        hovertemplate="Questions: %{y:.0f}<extra></extra>",
+                    )
+                    activity_chart.update_layout(
+                        height=360,
+                        margin=dict(l=8, r=8, t=8, b=8),
+                        paper_bgcolor="rgba(0,0,0,0)",
+                        plot_bgcolor="rgba(0,0,0,0)",
+                        font=dict(color="#EAF1F3"),
+                        xaxis_title="Session timeline",
+                        yaxis_title="Transcript pace (WPM)",
+                        yaxis2=dict(
+                            title="Questions",
+                            overlaying="y",
+                            side="right",
+                            showgrid=False,
+                            rangemode="tozero",
+                        ),
+                        legend=dict(orientation="h", y=1.08, x=0),
+                        barmode="overlay",
+                    )
+                    activity_chart.update_xaxes(gridcolor="#2F4B53", zerolinecolor="#2F4B53")
+                    activity_chart.update_yaxes(gridcolor="#2F4B53", zerolinecolor="#2F4B53")
+                    st.plotly_chart(activity_chart, use_container_width=True, config={"displayModeBar": False, "displaylogo": False})
+                else:
+                    st.info("Chat/questions timestamps could not be aligned into a shared progress view.")
+
+                if not reaction_moments_df.empty:
+                    st.markdown("**Segments With The Most Reactions**")
+                    st.dataframe(
+                        reaction_moments_df[["session_stage", "start_label", "excerpt", "chat_messages", "question_count"]],
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+            else:
+                st.caption("Cross-source preview requires a verbose transcript with timestamped segments.")
 
         if analysis_ran and analysis_md:
             st.markdown(analysis_md)
