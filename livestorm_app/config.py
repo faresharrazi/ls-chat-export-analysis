@@ -67,7 +67,7 @@ def get_runtime_secret(name: str, default: str = "") -> str:
 def configure_page() -> None:
     load_env_file()
 
-    page_config = {"page_title": "Livestorm Chat & Questions Export/Analysis", "layout": "wide"}
+    page_config = {"page_title": "Livestorm Post Event Analysis", "layout": "wide"}
     if ICON_PATH.exists():
         page_config["page_icon"] = str(ICON_PATH)
     st.set_page_config(**page_config)
@@ -245,11 +245,11 @@ def render_header() -> None:
             <div style="display:flex; align-items:center; gap:12px; margin:0.2rem 0 0.6rem 0;">
               <img src="data:image/png;base64,{header_icon_b64}" style="width:42px; height:42px; object-fit:contain;" />
               <h1 style="margin:0; color:#FFFFFF; font-family:'Space Grotesk','IBM Plex Sans',sans-serif; letter-spacing:-0.02em;">
-                Livestorm Chat, Questions & Transcript Analysis
+                Livestorm Post Event Analysis
               </h1>
             </div>
             """,
             unsafe_allow_html=True,
         )
     else:
-        st.title("Livestorm Chat, Questions & Transcript Analysis")
+        st.title("Livestorm Post Event Analysis")

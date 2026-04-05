@@ -1053,6 +1053,38 @@ def build_transcript_display_text(transcript_payload: Dict[str, Any]) -> str:
     return str(transcript.get("text") or "").strip()
 
 
+def build_transcript_plain_text(transcript_payload: Dict[str, Any]) -> str:
+    transcript = _extract_transcript_object(transcript_payload)
+    direct_text = str(transcript.get("text") or "").strip()
+    if direct_text:
+        return direct_text
+    full_transcript = str(transcript.get("full_transcript") or "").strip()
+    if full_transcript:
+        return full_transcript
+
+    segments = _extract_transcript_segments(transcript)
+    if segments:
+        combined_segments = " ".join(str(segment.get("text") or "").strip() for segment in segments).strip()
+        if combined_segments:
+            return re.sub(r"\s+", " ", combined_segments).strip()
+
+    sentence_items = _extract_sentence_items(transcript_payload, transcript)
+    if sentence_items:
+        combined_sentences = " ".join(
+            str(sentence.get("sentence") or sentence.get("text") or "").strip()
+            for sentence in sentence_items
+        ).strip()
+        if combined_sentences:
+            return re.sub(r"\s+", " ", combined_sentences).strip()
+
+    words = _extract_transcript_words(transcript)
+    if words:
+        joined_words = " ".join(str(word.get("word") or word.get("text") or "").strip() for word in words).strip()
+        if joined_words:
+            return re.sub(r"\s+", " ", joined_words).strip()
+    return ""
+
+
 def build_transcript_segments_df(transcript_payload: Dict[str, Any]) -> pd.DataFrame:
     transcript = _extract_transcript_object(transcript_payload)
     segments = _extract_transcript_segments(transcript)
@@ -2309,6 +2341,59 @@ def build_derived_stats(
     return stats
 
 
+def build_compact_transcript_payload_for_llm(transcript_payload: Dict[str, Any], max_segments: int = 120) -> Dict[str, Any]:
+    transcript = _extract_transcript_object(transcript_payload)
+    segments_df = build_transcript_segments_df(transcript_payload)
+    transcript_text = build_transcript_plain_text(transcript_payload)
+
+    compact_payload: Dict[str, Any] = {
+        "language": transcript.get("language"),
+        "duration_seconds": transcript.get("duration_seconds"),
+        "text": transcript_text,
+    }
+
+    if not segments_df.empty:
+        compact_segments_df = segments_df.head(max_segments).copy()
+        compact_payload["segments"] = compact_segments_df[
+            [column for column in ["start_label", "speaker", "duration_seconds", "text"] if column in compact_segments_df.columns]
+        ].to_dict("records")
+
+    sentence_items = _extract_sentence_items(transcript_payload, transcript)
+    if sentence_items:
+        compact_payload["sentences"] = [
+            {
+                "start": sentence.get("start"),
+                "speaker": sentence.get("speaker"),
+                "sentence": sentence.get("sentence") or sentence.get("text"),
+            }
+            for sentence in sentence_items[:200]
+            if isinstance(sentence, dict)
+        ]
+
+    named_entities = _extract_named_entity_items(transcript_payload)
+    if named_entities:
+        compact_payload["named_entities"] = named_entities[:100]
+
+    return compact_payload
+
+
+def build_compact_chat_payload_for_llm(chat_df: pd.DataFrame, max_rows: int = 150) -> Dict[str, Any]:
+    columns = [column for column in ["created_at", "author_id", "text_content"] if column in chat_df.columns]
+    return {
+        "messages": chat_df.head(max_rows)[columns].fillna("").to_dict("records") if columns else [],
+    }
+
+
+def build_compact_questions_payload_for_llm(questions_df: pd.DataFrame, max_rows: int = 80) -> Dict[str, Any]:
+    columns = [
+        column for column in ["asked_at", "asked_by", "question", "response"]
+        if column in questions_df.columns
+    ]
+    return {
+        "questions": questions_df.head(max_rows)[columns].fillna("").to_dict("records") if columns else [],
+    }
+
+
 def extract_common_terms(df: pd.DataFrame, top_n: int = 12) -> pd.DataFrame:
     if "text_content" not in df.columns:
         return pd.DataFrame(columns=["term", "count"])
@@ -2326,8 +2411,12 @@ def analyze_with_openai(
     questions_payload: Optional[Dict[str, Any]] = None,
     transcript_payload: Optional[Dict[str, Any]] = None,
 ) -> str:
+    messages: List[Dict[str, str]] = [
+        {"role": "system", "content": system_prompt},
+        {"role": "system", "content": f"Respond only in {output_language}."},
+    ]
     user_payload = {
-        "task": "Analyze this Livestorm session export.",
+        "task": "Use this Livestorm session data to complete the requested task.",
         "selected_sources": selected_sources,
         "derived_stats": derived_stats,
     }
@@ -2337,6 +2426,34 @@ def analyze_with_openai(
         user_payload["questions_api_response"] = questions_payload
     if transcript_payload is not None:
         user_payload["transcript_api_response"] = transcript_payload
+        transcript_text = transcript_payload.get("text")
+        if isinstance(transcript_text, str) and transcript_text.strip():
+            user_payload["transcript_text"] = transcript_text.strip()
+        transcript_segments = transcript_payload.get("segments")
+        if isinstance(transcript_segments, list) and transcript_segments:
+            readable_segments: List[str] = []
+            for segment in transcript_segments[:20]:
+                if not isinstance(segment, dict):
+                    continue
+                speaker = str(segment.get("speaker") or "").strip()
+                text = str(segment.get("text") or "").strip()
+                start_label = str(segment.get("start_label") or "").strip()
+                if not text:
+                    continue
+                prefix_parts = [part for part in [start_label, speaker] if part]
+                prefix = " | ".join(prefix_parts)
+                readable_segments.append(f"{prefix}: {text}" if prefix else text)
+            if readable_segments:
+                user_payload["transcript_excerpt"] = readable_segments
+            if isinstance(transcript_text, str) and transcript_text.strip():
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": f"Transcript text:\n\n{transcript_text.strip()}",
+                    }
+                )
+
+    messages.append({"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)})
 
     resp = requests.post(
         OPENAI_CHAT_COMPLETIONS_URL,
@@ -2344,11 +2461,7 @@ def analyze_with_openai(
         json={
             "model": model,
             "temperature": 0.2,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "system", "content": f"Respond only in {output_language}."},
-                {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
-            ],
+            "messages": messages,
         },
         timeout=120,
     )
@@ -2359,4 +2472,32 @@ def analyze_with_openai(
         return "No analysis returned by model."
     message = choices[0].get("message", {})
     content = message.get("content")
-    return content.strip() if isinstance(content, str) else "No analysis text returned by model."
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        text_parts: List[str] = []
+        for item in content:
+            if isinstance(item, str):
+                stripped = item.strip()
+                if stripped:
+                    text_parts.append(stripped)
+                continue
+            if not isinstance(item, dict):
+                continue
+            item_type = str(item.get("type") or "").strip().lower()
+            if item_type in {"text", "output_text"}:
+                text_value = item.get("text")
+                if isinstance(text_value, str) and text_value.strip():
+                    text_parts.append(text_value.strip())
+                    continue
+                nested_text = item.get("output_text")
+                if isinstance(nested_text, str) and nested_text.strip():
+                    text_parts.append(nested_text.strip())
+        if text_parts:
+            return "\n\n".join(text_parts).strip()
+    if isinstance(content, dict):
+        for key in ("text", "output_text", "content"):
+            value = content.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return "No analysis text returned by model."

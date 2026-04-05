@@ -29,6 +29,9 @@ from livestorm_app.services import (
     analyze_with_openai,
     build_analysis_prompt,
     build_content_repurpose_prompt,
+    build_compact_chat_payload_for_llm,
+    build_compact_questions_payload_for_llm,
+    build_compact_transcript_payload_for_llm,
     build_deep_analysis_prompt,
     build_derived_stats,
     build_transcript_job_debug_details,
@@ -711,9 +714,9 @@ if st.session_state.get("analysis_in_progress", False):
             output_language=OUTPUT_LANGUAGE_MAP[selected_output_language],
             selected_sources=selected_sources,
             derived_stats=derived_stats,
-            raw_payload=payload if "chat" in selected_sources else None,
-            questions_payload=questions_payload if "questions" in selected_sources else None,
-            transcript_payload=transcript_payload if "transcript" in selected_sources else None,
+            raw_payload=build_compact_chat_payload_for_llm(df) if "chat" in selected_sources and isinstance(df, pd.DataFrame) else None,
+            questions_payload=build_compact_questions_payload_for_llm(questions_df) if "questions" in selected_sources and isinstance(questions_df, pd.DataFrame) else None,
+            transcript_payload=build_compact_transcript_payload_for_llm(transcript_payload) if "transcript" in selected_sources and isinstance(transcript_payload, dict) else None,
         )
     except requests.HTTPError as exc:
         st.error(f"Analysis API error: {exc}")
@@ -723,7 +726,7 @@ if st.session_state.get("analysis_in_progress", False):
         analysis_md = ""
 
     st.session_state["analysis_md"] = analysis_md
-    st.session_state["analysis_ran"] = True
+    st.session_state["analysis_ran"] = bool(analysis_md)
     st.session_state["analysis_in_progress"] = False
     st.rerun()
 
@@ -759,9 +762,9 @@ if st.session_state.get("deep_analysis_in_progress", False):
             output_language=OUTPUT_LANGUAGE_MAP.get(selected_output_language, selected_output_language),
             selected_sources=["chat", "questions", "transcript"],
             derived_stats=derived_stats,
-            raw_payload=payload,
-            questions_payload=questions_payload,
-            transcript_payload=transcript_payload,
+            raw_payload=build_compact_chat_payload_for_llm(df, max_rows=250),
+            questions_payload=build_compact_questions_payload_for_llm(questions_df, max_rows=120),
+            transcript_payload=build_compact_transcript_payload_for_llm(transcript_payload, max_segments=220),
         )
     except requests.HTTPError as exc:
         logger.exception("Deep analysis request failed")
@@ -775,7 +778,7 @@ if st.session_state.get("deep_analysis_in_progress", False):
         deep_analysis_md = ""
 
     st.session_state["deep_analysis_md"] = deep_analysis_md
-    st.session_state["deep_analysis_ran"] = True
+    st.session_state["deep_analysis_ran"] = bool(deep_analysis_md)
     st.session_state["deep_analysis_in_progress"] = False
     st.rerun()
 
@@ -818,9 +821,9 @@ if st.session_state.get("content_repurpose_in_progress", False):
             output_language=OUTPUT_LANGUAGE_MAP.get(selected_output_language, selected_output_language),
             selected_sources=selected_sources,
             derived_stats=derived_stats,
-            raw_payload=payload if "chat" in selected_sources else None,
-            questions_payload=questions_payload if "questions" in selected_sources else None,
-            transcript_payload=transcript_payload,
+            raw_payload=build_compact_chat_payload_for_llm(df) if "chat" in selected_sources and isinstance(df, pd.DataFrame) else None,
+            questions_payload=build_compact_questions_payload_for_llm(questions_df) if "questions" in selected_sources and isinstance(questions_df, pd.DataFrame) else None,
+            transcript_payload=build_compact_transcript_payload_for_llm(transcript_payload),
         )
     except requests.HTTPError as exc:
         logger.exception("Content repurposing request failed")
@@ -834,7 +837,7 @@ if st.session_state.get("content_repurpose_in_progress", False):
         content_repurpose_md = ""
 
     st.session_state["content_repurpose_md"] = content_repurpose_md
-    st.session_state["content_repurpose_ran"] = True
+    st.session_state["content_repurpose_ran"] = bool(content_repurpose_md)
     if content_repurpose_md:
         history = st.session_state.get("content_repurpose_history", [])
         if not isinstance(history, list):

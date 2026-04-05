@@ -431,13 +431,33 @@ def render_deep_analysis_block(
             st.markdown(deep_analysis_md)
             deep_analysis_bytes = deep_analysis_md.encode("utf-8")
             deep_analysis_ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
-            st.download_button(
-                label="Download Deep Analysis",
-                data=deep_analysis_bytes,
-                file_name=f"livestorm-deep-analysis-{current_session_id}-{deep_analysis_ts}.md",
-                mime="text/markdown",
-                use_container_width=True,
-            )
+            with st.columns([1.1, 2.9])[0]:
+                download_format = st.selectbox(
+                    "Download As",
+                    options=["PDF", "Markdown"],
+                    index=0,
+                    key=f"deep_analysis_download_format_{current_session_id}",
+                )
+                if download_format == "Markdown":
+                    st.download_button(
+                        label="Download Deep Analysis",
+                        data=deep_analysis_bytes,
+                        file_name=f"livestorm-deep-analysis-{current_session_id}-{deep_analysis_ts}.md",
+                        mime="text/markdown",
+                        use_container_width=True,
+                    )
+                else:
+                    try:
+                        pdf_bytes = analysis_markdown_to_pdf_bytes(deep_analysis_md, title="Livestorm Deep Analysis")
+                        st.download_button(
+                            label="Download Deep Analysis",
+                            data=pdf_bytes,
+                            file_name=f"livestorm-deep-analysis-{current_session_id}-{deep_analysis_ts}.pdf",
+                            mime="application/pdf",
+                            use_container_width=True,
+                        )
+                    except RuntimeError as exc:
+                        st.caption(str(exc))
         elif deep_analysis_ran:
             st.info("Deep analysis finished, but no markdown output was returned.")
 
