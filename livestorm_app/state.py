@@ -14,6 +14,11 @@ SESSION_DEFAULTS = {
     "chat_df": None,
     "analysis_md": "",
     "analysis_ran": False,
+    "deep_analysis_md": "",
+    "deep_analysis_ran": False,
+    "content_repurpose_md": "",
+    "content_repurpose_ran": False,
+    "content_repurpose_history": [],
     "questions_payload": None,
     "questions_df": None,
     "event_sessions": [],
@@ -31,12 +36,16 @@ SESSION_DEFAULTS = {
     "analysis_include_chat_questions": False,
     "analysis_include_transcript": False,
     "analysis_include_transcript_pending": False,
-    "transcript_verbose": False,
     "transcript_job_id": "",
     "transcript_job_status": "",
     "transcript_job_started_at": 0.0,
     "background_job_notice": "",
     "analysis_language": "English",
+    "deep_analysis_in_progress": False,
+    "content_repurpose_in_progress": False,
+    "content_repurpose_type": "summary",
+    "content_repurpose_language": "English",
+    "transcript_speaker_names": {},
     "load_event_sessions_in_progress": False,
     "last_fetched_chat_session_id": "",
     "last_fetched_transcript_signature": "",
@@ -60,6 +69,14 @@ def get_active_session_id(input_mode: str, session_id: str, selected_session_fro
 def clear_analysis_output() -> None:
     st.session_state["analysis_md"] = ""
     st.session_state["analysis_ran"] = False
+    st.session_state["analysis_in_progress"] = False
+    st.session_state["deep_analysis_md"] = ""
+    st.session_state["deep_analysis_ran"] = False
+    st.session_state["deep_analysis_in_progress"] = False
+    st.session_state["content_repurpose_md"] = ""
+    st.session_state["content_repurpose_ran"] = False
+    st.session_state["content_repurpose_in_progress"] = False
+    st.session_state["content_repurpose_history"] = []
 
 
 def reset_chat_question_state() -> None:

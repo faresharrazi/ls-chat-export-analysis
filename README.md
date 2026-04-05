@@ -7,6 +7,8 @@ Streamlit app to:
 - Explore transcript, chat, and questions in dedicated expandable blocks
 - Clean and export messages/questions as CSV
 - Run OpenAI analysis on `Transcript`, `Chat + Questions`, or all three together
+- Run a dedicated `Deep Analysis` using transcript JSON, chat, and questions with a stronger technical prompt
+- Generate repurposed content such as summaries, email follow-ups, blog posts, and social posts in the selected output language
 
 ## Quickstart
 
@@ -55,9 +57,15 @@ requirements.txt
 
 ## UI Layout
 
-- `Transcript Block`: transcript metrics, verbose charts, transcript viewer, JSON export
+- `Transcript Block`: transcript metrics, silence and pacing charts, transcript viewer, JSON export
 - `Chat & Questions Block`: engagement charts, chat table, questions table, CSV exports
 - `Analysis Block`: source selection, language selection, markdown/PDF export
+- `Content Repurposing Block`: choose content type, choose output language, generate localized derivative content
+- Chart rendering is organized under:
+  - `livestorm_app/charts/transcript/`
+  - `livestorm_app/charts/chat_questions/`
+  - `livestorm_app/charts/cross/`
+  Each chart lives in its own `.py` file and users can choose which charts to display in the UI.
 
 ## Editable Prompt
 
@@ -68,6 +76,11 @@ You can change the analysis instructions without code edits:
 - `prompts/analysis_questions_prompt.txt`
 - `prompts/analysis_transcript_prompt.txt`
 - `prompts/analysis_all_sources_prompt.txt`
+- `prompts/analysis_deep_prompt.txt`
+- `prompts/content_repurpose_summary_prompt.txt`
+- `prompts/content_repurpose_email_prompt.txt`
+- `prompts/content_repurpose_blog_prompt.txt`
+- `prompts/content_repurpose_social_media_prompt.txt`
 
 ## Notes
 
@@ -75,5 +88,6 @@ You can change the analysis instructions without code edits:
 - OpenAI usage is optional; if no OpenAI key is provided, fetch/export still works.
 - Transcript fetches require `API_AUTH_KEY`.
 - Transcript fetches use `POST /api/transcribe/jobs` plus polling every 3 seconds for up to 15 minutes.
+- Transcript analytics assume the API returns timed utterances and word timestamps in the JSON payload.
 - Questions are never analyzed by themselves; they are always bundled with chat.
 - There is no guaranteed free OpenAI model; `gpt-4o-mini` is typically a low-cost option.

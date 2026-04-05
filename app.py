@@ -1,6 +1,7 @@
 import logging
 import os
 import time
+from datetime import datetime
 from typing import Any, Dict, List
 
 import pandas as pd
@@ -20,11 +21,15 @@ from livestorm_app.config import (
 from livestorm_app.renderers import (
     render_analysis_block,
     render_chat_questions_block,
+    render_content_repurpose_block,
+    render_deep_analysis_block,
     render_transcript_block,
 )
 from livestorm_app.services import (
     analyze_with_openai,
     build_analysis_prompt,
+    build_content_repurpose_prompt,
+    build_deep_analysis_prompt,
     build_derived_stats,
     build_transcript_job_debug_details,
     build_event_session_options,
@@ -57,8 +62,8 @@ job_manager = get_background_job_manager()
 TRANSCRIPT_POLL_INTERVAL_SECONDS = 1
 
 
-def build_transcript_request_signature(session_id: str, verbose: bool) -> str:
-    return f"{str(session_id).strip()}::verbose={str(bool(verbose)).lower()}"
+def build_transcript_request_signature(session_id: str) -> str:
+    return str(session_id).strip()
 
 
 def set_api_error_details(resource_label: str, details: dict | None) -> None:
@@ -142,7 +147,7 @@ def apply_chat_questions_job_result(job_result: Dict[str, Any]) -> None:
     st.session_state["chat_fetch_job_id"] = ""
 
 
-def apply_transcript_success(session_id: str, verbose: bool, transcript_payload: Dict[str, Any]) -> None:
+def apply_transcript_success(session_id: str, transcript_payload: Dict[str, Any]) -> None:
     clear_analysis_output()
     clear_api_error_details()
     clear_background_notice()
@@ -151,7 +156,6 @@ def apply_transcript_success(session_id: str, verbose: bool, transcript_payload:
     st.session_state["transcript_text"] = transcript_text
     st.session_state["last_fetched_transcript_signature"] = build_transcript_request_signature(
         str(session_id or ""),
-        bool(verbose),
     )
     st.session_state["current_session_id"] = str(session_id or "")
     st.session_state["transcript_fetch_in_progress"] = False
@@ -220,8 +224,6 @@ def poll_transcript_job_if_needed() -> None:
     transcript_api_key = get_runtime_secret("API_AUTH_KEY", "")
     job_id = str(st.session_state.get("transcript_job_id") or "").strip()
     session_id = str(st.session_state.get("current_session_id") or "").strip()
-    verbose = bool(st.session_state.get("transcript_verbose", False))
-
     if not transcript_api_key or not job_id:
         return
 
@@ -252,11 +254,12 @@ def poll_transcript_job_if_needed() -> None:
     if status == "completed":
         result = job_payload.get("result")
         transcript = result.get("transcript") if isinstance(result, dict) else None
-        if isinstance(transcript, dict):
-            apply_transcript_success(session_id, verbose, {"transcript": transcript})
+        transcription = result.get("transcription") if isinstance(result, dict) else None
+        if isinstance(transcript, dict) or isinstance(transcription, dict):
+            apply_transcript_success(session_id, job_payload)
         else:
             fail_transcript_job(
-                "Transcript job completed without a transcript result.",
+                "Transcript job completed without a supported transcript result.",
                 build_transcript_job_debug_details(job_payload, "Transcript"),
             )
         st.rerun()
@@ -315,7 +318,6 @@ event_id_valid = bool(EVENT_ID_PATTERN.match(str(event_id).strip()))
 active_session_id = get_active_session_id(input_mode, session_id, selected_session_from_event)
 current_transcript_signature = build_transcript_request_signature(
     active_session_id,
-    bool(st.session_state.get("transcript_verbose", False)),
 )
 form_locked = bool(st.session_state.get("transcript_fetch_in_progress", False))
 
@@ -406,7 +408,6 @@ if controls_col is not None:
         active_session_id = get_active_session_id(input_mode, session_id, selected_session_from_event)
         current_transcript_signature = build_transcript_request_signature(
             active_session_id,
-            bool(st.session_state.get("transcript_verbose", False)),
         )
 
         chat_request_already_fetched = (
@@ -421,12 +422,6 @@ if controls_col is not None:
         chat_job_in_progress = bool(st.session_state.get("chat_fetch_job_id", ""))
 
         fetch_disabled = (not has_api_key) or chat_request_already_fetched or chat_job_in_progress or form_locked
-        transcript_toggle_disabled = (
-            (not has_transcript_api_key)
-            or (not bool(active_session_id))
-            or transcript_job_in_progress
-            or form_locked
-        )
         transcript_fetch_disabled = (
             (not has_transcript_api_key)
             or (not bool(active_session_id))
@@ -464,12 +459,6 @@ if controls_col is not None:
                     key="transcript_running_btn",
                 )
             else:
-                st.checkbox(
-                    "Verbose?",
-                    key="transcript_verbose",
-                    disabled=transcript_toggle_disabled,
-                    help="When checked the transcript will be generated timestamped.",
-                )
                 fetch_transcript_button = transcript_btn_placeholder.button(
                     "Fetch Transcript",
                     type="primary",
@@ -477,7 +466,7 @@ if controls_col is not None:
                     key="transcript_fetch_btn",
                 )
                 if transcript_request_already_fetched:
-                    st.caption("Transcript already fetched for this session with this verbose setting. Change one of them to fetch again.")
+                    st.caption("Transcript already fetched for this session. Change the session to fetch again.")
 
         if not has_api_key and not has_transcript_api_key:
             st.caption("Add a Livestorm API key or set `API_AUTH_KEY` to enable transcript fetches.")
@@ -576,17 +565,16 @@ if fetch_transcript_button:
     elif not active_session_id:
         st.error("Please select a valid session before fetching the transcript.")
     else:
-        verbose = bool(st.session_state.get("transcript_verbose", False))
         st.session_state["transcript_fetch_in_progress"] = True
         st.session_state["current_session_id"] = active_session_id
         st.session_state["transcript_payload"] = None
         st.session_state["transcript_text"] = ""
         try:
-            job_payload = create_transcript_job(transcript_api_key, active_session_id, timestamped=verbose)
+            job_payload = create_transcript_job(transcript_api_key, active_session_id, timestamped=True)
         except requests.HTTPError as exc:
             logger.exception(
                 "Transcript job creation failed",
-                extra={"session_id": active_session_id, "verbose": verbose},
+                extra={"session_id": active_session_id},
             )
             fail_transcript_job(
                 format_generic_http_error(exc, "Transcript"),
@@ -595,7 +583,7 @@ if fetch_transcript_button:
         except requests.RequestException as exc:
             logger.exception(
                 "Transcript job creation network error",
-                extra={"session_id": active_session_id, "verbose": verbose},
+                extra={"session_id": active_session_id},
             )
             fail_transcript_job(
                 f"Transcript network error: {exc}",
@@ -623,6 +611,10 @@ transcript_payload = st.session_state.get("transcript_payload")
 transcript_text = st.session_state.get("transcript_text", "")
 analysis_md = st.session_state.get("analysis_md", "")
 analysis_ran = st.session_state.get("analysis_ran", False)
+deep_analysis_md = st.session_state.get("deep_analysis_md", "")
+deep_analysis_ran = st.session_state.get("deep_analysis_ran", False)
+content_repurpose_md = st.session_state.get("content_repurpose_md", "")
+content_repurpose_ran = st.session_state.get("content_repurpose_ran", False)
 current_session_id = st.session_state.get("current_session_id") or active_session_id
 transcript_loading = bool(st.session_state.get("transcript_fetch_in_progress", False) and st.session_state.get("transcript_job_id", ""))
 
@@ -640,6 +632,14 @@ with main_col:
         is_loading=transcript_loading,
     )
     render_chat_questions_block(df, questions_df, current_session_id)
+    content_repurpose_button = render_content_repurpose_block(
+        current_session_id=current_session_id,
+        transcript_available=transcript_available,
+        chat_available=chat_available,
+        questions_available=questions_available,
+        content_repurpose_md=content_repurpose_md,
+        content_repurpose_ran=content_repurpose_ran,
+    )
     analyze_button = render_analysis_block(
         current_session_id=current_session_id,
         analysis_ran=analysis_ran,
@@ -651,9 +651,25 @@ with main_col:
         chat_df=df,
         questions_df=questions_df,
     )
+    deep_analysis_button = render_deep_analysis_block(
+        current_session_id=current_session_id,
+        deep_analysis_ran=deep_analysis_ran,
+        deep_analysis_md=deep_analysis_md,
+        transcript_available=transcript_available,
+        chat_available=chat_available,
+        questions_available=questions_available,
+    )
 
 if analyze_button:
     st.session_state["analysis_in_progress"] = True
+    st.rerun()
+
+if deep_analysis_button:
+    st.session_state["deep_analysis_in_progress"] = True
+    st.rerun()
+
+if content_repurpose_button:
+    st.session_state["content_repurpose_in_progress"] = True
     st.rerun()
 
 if st.session_state.get("analysis_in_progress", False):
@@ -709,4 +725,130 @@ if st.session_state.get("analysis_in_progress", False):
     st.session_state["analysis_md"] = analysis_md
     st.session_state["analysis_ran"] = True
     st.session_state["analysis_in_progress"] = False
+    st.rerun()
+
+if st.session_state.get("deep_analysis_in_progress", False):
+    payload = st.session_state.get("chat_payload")
+    df = st.session_state.get("chat_df")
+    questions_payload = st.session_state.get("questions_payload")
+    questions_df = st.session_state.get("questions_df")
+    transcript_payload = st.session_state.get("transcript_payload")
+    selected_output_language = st.session_state.get("analysis_language", output_language_label)
+
+    if transcript_payload is None or payload is None or df is None or questions_payload is None or questions_df is None:
+        st.warning("Deep analysis requires transcript, chat, and questions.")
+        st.session_state["deep_analysis_in_progress"] = False
+        st.rerun()
+    if not api_analysis_key:
+        st.warning("Deep analysis skipped: missing `OPENAI_API_KEY` in environment.")
+        st.session_state["deep_analysis_in_progress"] = False
+        st.rerun()
+
+    prompt_text = build_deep_analysis_prompt()
+    derived_stats = build_derived_stats(
+        chat_df=df,
+        questions_df=questions_df,
+        transcript_payload=transcript_payload,
+    )
+
+    try:
+        deep_analysis_md = analyze_with_openai(
+            api_key=api_analysis_key,
+            model=DEFAULT_OPENAI_MODEL,
+            system_prompt=prompt_text,
+            output_language=OUTPUT_LANGUAGE_MAP.get(selected_output_language, selected_output_language),
+            selected_sources=["chat", "questions", "transcript"],
+            derived_stats=derived_stats,
+            raw_payload=payload,
+            questions_payload=questions_payload,
+            transcript_payload=transcript_payload,
+        )
+    except requests.HTTPError as exc:
+        logger.exception("Deep analysis request failed")
+        set_api_error_details("Deep analysis", build_http_error_debug_details(exc, "Deep analysis"))
+        set_api_error_message(format_generic_http_error(exc, "Deep analysis"))
+        deep_analysis_md = ""
+    except requests.RequestException as exc:
+        logger.exception("Deep analysis network error")
+        set_api_error_details("Deep analysis", build_request_exception_debug_details(exc, "Deep analysis"))
+        set_api_error_message(f"Deep analysis network error: {exc}")
+        deep_analysis_md = ""
+
+    st.session_state["deep_analysis_md"] = deep_analysis_md
+    st.session_state["deep_analysis_ran"] = True
+    st.session_state["deep_analysis_in_progress"] = False
+    st.rerun()
+
+if st.session_state.get("content_repurpose_in_progress", False):
+    payload = st.session_state.get("chat_payload")
+    df = st.session_state.get("chat_df")
+    questions_payload = st.session_state.get("questions_payload")
+    questions_df = st.session_state.get("questions_df")
+    transcript_payload = st.session_state.get("transcript_payload")
+    content_type = st.session_state.get("content_repurpose_type", "summary")
+    selected_output_language = st.session_state.get("content_repurpose_language", output_language_label)
+
+    if transcript_payload is None:
+        st.warning("Content repurposing requires a transcript.")
+        st.session_state["content_repurpose_in_progress"] = False
+        st.rerun()
+    if not api_analysis_key:
+        st.warning("Content repurposing skipped: missing `OPENAI_API_KEY` in environment.")
+        st.session_state["content_repurpose_in_progress"] = False
+        st.rerun()
+
+    selected_sources = ["transcript"]
+    if payload is not None and df is not None:
+        selected_sources.append("chat")
+    if questions_payload is not None and questions_df is not None:
+        selected_sources.append("questions")
+
+    prompt_text = build_content_repurpose_prompt(content_type)
+    derived_stats = build_derived_stats(
+        chat_df=df if "chat" in selected_sources else None,
+        questions_df=questions_df if "questions" in selected_sources else None,
+        transcript_payload=transcript_payload,
+    )
+
+    try:
+        content_repurpose_md = analyze_with_openai(
+            api_key=api_analysis_key,
+            model=DEFAULT_OPENAI_MODEL,
+            system_prompt=prompt_text,
+            output_language=OUTPUT_LANGUAGE_MAP.get(selected_output_language, selected_output_language),
+            selected_sources=selected_sources,
+            derived_stats=derived_stats,
+            raw_payload=payload if "chat" in selected_sources else None,
+            questions_payload=questions_payload if "questions" in selected_sources else None,
+            transcript_payload=transcript_payload,
+        )
+    except requests.HTTPError as exc:
+        logger.exception("Content repurposing request failed")
+        set_api_error_details("Content repurposing", build_http_error_debug_details(exc, "Content repurposing"))
+        set_api_error_message(format_generic_http_error(exc, "Content repurposing"))
+        content_repurpose_md = ""
+    except requests.RequestException as exc:
+        logger.exception("Content repurposing network error")
+        set_api_error_details("Content repurposing", build_request_exception_debug_details(exc, "Content repurposing"))
+        set_api_error_message(f"Content repurposing network error: {exc}")
+        content_repurpose_md = ""
+
+    st.session_state["content_repurpose_md"] = content_repurpose_md
+    st.session_state["content_repurpose_ran"] = True
+    if content_repurpose_md:
+        history = st.session_state.get("content_repurpose_history", [])
+        if not isinstance(history, list):
+            history = []
+        timestamp = datetime.utcnow()
+        history.append(
+            {
+                "type": content_type,
+                "language": selected_output_language,
+                "markdown": content_repurpose_md,
+                "created_at": timestamp.strftime("%Y-%m-%d %H:%M:%S UTC"),
+                "timestamp": timestamp.strftime("%Y%m%d-%H%M%S"),
+            }
+        )
+        st.session_state["content_repurpose_history"] = history
+    st.session_state["content_repurpose_in_progress"] = False
     st.rerun()

@@ -16,9 +16,14 @@ from livestorm_app.config import (
     ANALYSIS_ALL_SOURCES_PROMPT_PATH,
     ANALYSIS_BASE_PROMPT_PATH,
     ANALYSIS_CHAT_PROMPT_PATH,
+    ANALYSIS_DEEP_PROMPT_PATH,
     ANALYSIS_QUESTIONS_PROMPT_PATH,
     ANALYSIS_TRANSCRIPT_PROMPT_PATH,
     API_BASE,
+    CONTENT_REPURPOSE_BLOG_PROMPT_PATH,
+    CONTENT_REPURPOSE_EMAIL_PROMPT_PATH,
+    CONTENT_REPURPOSE_SOCIAL_MEDIA_PROMPT_PATH,
+    CONTENT_REPURPOSE_SUMMARY_PROMPT_PATH,
     DEFAULT_PAGE_SIZE,
     MAX_PAGES,
     OPENAI_CHAT_COMPLETIONS_URL,
@@ -591,7 +596,7 @@ def fetch_event_past_sessions(key: str, event: str, page_size: int = DEFAULT_PAG
     return final_payload
 
 
-def create_transcript_job(key: str, session: str, timestamped: bool = False) -> Dict[str, Any]:
+def create_transcript_job(key: str, session: str, timestamped: bool = True) -> Dict[str, Any]:
     resp = requests.post(
         TRANSCRIPT_JOBS_API_URL,
         headers=build_transcript_headers(key),
@@ -650,8 +655,10 @@ def wait_for_transcript_job(
         if status == "completed":
             result = payload.get("result")
             if isinstance(result, dict) and isinstance(result.get("transcript"), dict):
-                return result["transcript"]
-            raise TranscriptJobError("Transcript job completed without a transcript result.", payload)
+                return payload
+            if isinstance(result, dict) and isinstance(result.get("transcription"), dict):
+                return payload
+            raise TranscriptJobError("Transcript job completed without a supported transcript result.", payload)
         if status == "failed":
             error = payload.get("error")
             message = error.get("message") if isinstance(error, dict) else None
@@ -668,7 +675,7 @@ def wait_for_transcript_job(
 def fetch_session_transcript(
     key: str,
     session: str,
-    verbose: bool = False,
+    verbose: bool = True,
     existing_job_id: str = "",
     on_poll: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Dict[str, Any]:
@@ -681,14 +688,14 @@ def fetch_session_transcript(
         if on_poll is not None:
             on_poll(job)
 
-    transcript = wait_for_transcript_job(
+    transcript_payload = wait_for_transcript_job(
         key,
         job_id,
         poll_interval_seconds=TRANSCRIPT_POLL_INTERVAL_SECONDS,
         timeout_seconds=TRANSCRIPT_TIMEOUT_SECONDS,
         on_poll=on_poll,
     )
-    return {"transcript": transcript}
+    return transcript_payload
 
 
 def fetch_chat_and_questions_bundle(key: str, session_id: str) -> Dict[str, Any]:
@@ -746,6 +753,38 @@ def build_analysis_prompt(selected_sources: List[str]) -> str:
         "You are a senior analyst. Review the selected Livestorm session sources and return concise, "
         "evidence-based markdown with an executive summary, key themes, engagement insights, risks, "
         "and actionable recommendations. Clearly state any limits caused by missing sources."
+    )
+
+
+def build_deep_analysis_prompt() -> str:
+    prompt = load_analysis_prompt(ANALYSIS_DEEP_PROMPT_PATH)
+    if prompt.strip():
+        return prompt
+    return (
+        "You are a staff-level technical analyst. Perform a deep analytical review of the provided Livestorm "
+        "session data using the full transcript JSON, chat payload, and questions payload. Return a technical "
+        "markdown report with sections for executive summary, timeline analysis, communication quality, speaker "
+        "dynamics, engagement diagnostics, business signal extraction, risk areas, data limitations, and highly "
+        "specific recommendations. Support conclusions with concrete evidence from the payloads."
+    )
+
+
+def build_content_repurpose_prompt(content_type: str) -> str:
+    prompt_map = {
+        "summary": CONTENT_REPURPOSE_SUMMARY_PROMPT_PATH,
+        "email": CONTENT_REPURPOSE_EMAIL_PROMPT_PATH,
+        "blog": CONTENT_REPURPOSE_BLOG_PROMPT_PATH,
+        "social_media": CONTENT_REPURPOSE_SOCIAL_MEDIA_PROMPT_PATH,
+    }
+    prompt_path = prompt_map.get(content_type)
+    if prompt_path is not None:
+        prompt = load_analysis_prompt(prompt_path)
+        if prompt.strip():
+            return prompt
+    return (
+        "You are a content repurposing specialist. Use the provided Livestorm transcript, chat, and questions to "
+        "generate polished derivative content in the requested format. Be faithful to the source material, avoid "
+        "inventing facts, and write in the requested output language."
     )
 
 
@@ -884,6 +923,34 @@ def _extract_transcript_object(transcript_payload: Dict[str, Any]) -> Dict[str, 
     transcript = transcript_payload.get("transcript")
     if isinstance(transcript, dict):
         return transcript
+    result = transcript_payload.get("result")
+    if isinstance(result, dict):
+        nested_transcript = result.get("transcript")
+        if isinstance(nested_transcript, dict):
+            return nested_transcript
+        transcription = result.get("transcription")
+        if isinstance(transcription, dict):
+            utterances = transcription.get("utterances")
+            language = None
+            if isinstance(utterances, list):
+                for utterance in utterances:
+                    if isinstance(utterance, dict) and utterance.get("language"):
+                        language = utterance.get("language")
+                        break
+            metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+            return {
+                **transcription,
+                "timestamped": bool(utterances),
+                "created_at": transcript_payload.get("completed_at") or transcript_payload.get("created_at"),
+                "duration_seconds": metadata.get("audio_duration")
+                or transcript_payload.get("audio_duration")
+                or (transcript_payload.get("file") or {}).get("audio_duration"),
+                "language": language,
+                "model": (transcript_payload.get("request_params") or {}).get("model"),
+                "requested_model": (transcript_payload.get("request_params") or {}).get("model"),
+                "usage": metadata,
+                "recording": transcript_payload.get("file"),
+            }
     return transcript_payload if isinstance(transcript_payload, dict) else {}
 
 
@@ -893,6 +960,32 @@ def _extract_transcript_segments(transcript: Dict[str, Any]) -> List[Dict[str, A
         if isinstance(value, list):
             return [item for item in value if isinstance(item, dict)]
     return []
+
+
+def _extract_speaker_value(segment: Dict[str, Any]) -> Any:
+    for key in ("speaker", "speaker_name", "speaker_label", "speaker_id", "participant", "author"):
+        if key in segment and segment.get(key) not in (None, ""):
+            return segment.get(key)
+    return None
+
+
+def _extract_transcript_words(transcript: Dict[str, Any]) -> List[Dict[str, Any]]:
+    direct_words = transcript.get("words")
+    if isinstance(direct_words, list):
+        return [item for item in direct_words if isinstance(item, dict)]
+
+    segments = _extract_transcript_segments(transcript)
+    words: List[Dict[str, Any]] = []
+    for segment in segments:
+        segment_words = segment.get("words")
+        if not isinstance(segment_words, list):
+            continue
+        speaker = _extract_speaker_value(segment)
+        for word in segment_words:
+            if not isinstance(word, dict):
+                continue
+            words.append({**word, "_speaker": speaker})
+    return words
 
 
 def _get_segment_start_value(segment: Dict[str, Any]) -> Any:
@@ -933,6 +1026,30 @@ def build_transcript_display_text(transcript_payload: Dict[str, Any]) -> str:
             lines.append(f"[{timestamp_label}] {segment_text}" if timestamp_label else segment_text)
         if lines:
             return "\n".join(lines)
+    if isinstance(segments, list) and segments:
+        combined_text = " ".join(str(segment.get("text") or "").strip() for segment in segments).strip()
+        if combined_text:
+            return combined_text
+    full_transcript = transcript.get("full_transcript")
+    if isinstance(full_transcript, str) and full_transcript.strip():
+        return full_transcript.strip()
+    sentence_items = _extract_sentence_items(transcript_payload, transcript)
+    if sentence_items:
+        sentence_lines: List[str] = []
+        for sentence in sentence_items:
+            sentence_text = str(sentence.get("sentence") or sentence.get("text") or "").strip()
+            if not sentence_text:
+                continue
+            start_value = sentence.get("start") or sentence.get("start_time")
+            timestamp_label = format_seconds_label(_coerce_seconds(start_value))
+            sentence_lines.append(f"[{timestamp_label}] {sentence_text}" if timestamp_label else sentence_text)
+        if sentence_lines:
+            return "\n".join(sentence_lines)
+    words = _extract_transcript_words(transcript)
+    if words:
+        joined_words = " ".join(str(word.get("word") or word.get("text") or "").strip() for word in words).strip()
+        if joined_words:
+            return re.sub(r"\s+", " ", joined_words).strip()
     return str(transcript.get("text") or "").strip()
 
 
@@ -947,14 +1064,7 @@ def build_transcript_segments_df(transcript_payload: Dict[str, Any]) -> pd.DataF
         text = str(segment.get("text") or "").strip()
         start_value = _get_segment_start_value(segment)
         end_value = _get_segment_end_value(segment)
-        speaker = (
-            segment.get("speaker")
-            or segment.get("speaker_name")
-            or segment.get("speaker_label")
-            or segment.get("speaker_id")
-            or segment.get("participant")
-            or segment.get("author")
-        )
+        speaker = _extract_speaker_value(segment)
 
         start_seconds = _coerce_seconds(start_value)
         end_seconds = _coerce_seconds(end_value)
@@ -968,7 +1078,7 @@ def build_transcript_segments_df(transcript_payload: Dict[str, Any]) -> pd.DataF
                 "start_label": format_seconds_label(start_seconds),
                 "duration_seconds": duration_seconds,
                 "text": text,
-                "speaker": str(speaker).strip() if speaker else "Unknown speaker",
+                "speaker": str(speaker).strip() if speaker not in (None, "") else "Unknown speaker",
                 "word_count": word_count,
                 "words_per_second": round(word_count / duration_seconds, 2) if duration_seconds and duration_seconds > 0 else None,
             }
@@ -1079,14 +1189,118 @@ def extract_meaningful_terms_from_series(text_series: pd.Series, top_n: int = 10
     return scored_df.head(top_n).reset_index(drop=True)
 
 
+def _extract_sentence_items(transcript_payload: Dict[str, Any], transcript: Dict[str, Any]) -> List[Dict[str, Any]]:
+    direct_sentences = transcript.get("sentences")
+    if isinstance(direct_sentences, list):
+        return [item for item in direct_sentences if isinstance(item, dict)]
+
+    result = transcript_payload.get("result")
+    if isinstance(result, dict):
+        transcription = result.get("transcription")
+        if isinstance(transcription, dict) and isinstance(transcription.get("sentences"), list):
+            return [item for item in transcription.get("sentences") if isinstance(item, dict)]
+        sentences_payload = result.get("sentences")
+        if isinstance(sentences_payload, dict) and isinstance(sentences_payload.get("results"), list):
+            return [item for item in sentences_payload.get("results") if isinstance(item, dict)]
+    return []
+
+
+def _extract_named_entity_items(transcript_payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    result = transcript_payload.get("result")
+    if isinstance(result, dict):
+        ner_payload = result.get("named_entity_recognition")
+        if isinstance(ner_payload, dict) and isinstance(ner_payload.get("results"), list):
+            return [item for item in ner_payload.get("results") if isinstance(item, dict)]
+    direct_entities = transcript_payload.get("named_entities")
+    if isinstance(direct_entities, list):
+        return [item for item in direct_entities if isinstance(item, dict)]
+    return []
+
+
+def _bucket_seconds(value: Optional[float], bucket_size_seconds: int) -> Optional[int]:
+    if value is None or pd.isna(value):
+        return None
+    return int(float(value) // bucket_size_seconds) * bucket_size_seconds
+
+
+def _safe_quantile(series: pd.Series, q: float, default: float = 0.0) -> float:
+    clean = pd.to_numeric(series, errors="coerce").dropna()
+    if clean.empty:
+        return default
+    return float(clean.quantile(q))
+
+
+def _min_max_scale(value: float, low: float, high: float) -> float:
+    if high <= low:
+        return 0.5
+    return min(max((float(value) - low) / (high - low), 0.0), 1.0)
+
+
+def apply_speaker_name_map_to_insights(insights: Dict[str, Any], speaker_name_map: Dict[str, str]) -> Dict[str, Any]:
+    if not isinstance(insights, dict) or not isinstance(speaker_name_map, dict) or not speaker_name_map:
+        return insights
+
+    normalized_map = {
+        str(key).strip(): str(value).strip()
+        for key, value in speaker_name_map.items()
+        if str(key).strip() and str(value).strip()
+    }
+    if not normalized_map:
+        return insights
+
+    def map_speaker(value: Any) -> Any:
+        key = str(value).strip()
+        return normalized_map.get(key, value)
+
+    def map_speaker_pair(value: Any) -> Any:
+        if not isinstance(value, str) or "->" not in value:
+            return value
+        left, right = [part.strip() for part in value.split("->", 1)]
+        return f"{normalized_map.get(left, left)} -> {normalized_map.get(right, right)}"
+
+    transformed: Dict[str, Any] = {}
+    for key, value in insights.items():
+        if isinstance(value, pd.DataFrame):
+            df = value.copy()
+            for speaker_column in ["speaker", "from_speaker", "to_speaker", "dominant_speaker"]:
+                if speaker_column in df.columns:
+                    df[speaker_column] = df[speaker_column].apply(map_speaker)
+            if "speaker_pair" in df.columns:
+                df["speaker_pair"] = df["speaker_pair"].apply(map_speaker_pair)
+            transformed[key] = df
+        else:
+            transformed[key] = value
+    return transformed
+
+
 def build_transcript_insights(transcript_payload: Dict[str, Any]) -> Dict[str, Any]:
     segments_df = build_transcript_segments_df(transcript_payload)
     if segments_df.empty:
         return {
             "segments_df": segments_df,
+            "words_df": pd.DataFrame(),
+            "sentence_df": pd.DataFrame(),
             "timeline_df": pd.DataFrame(),
             "pace_df": pd.DataFrame(),
             "silence_df": pd.DataFrame(),
+            "pause_type_df": pd.DataFrame(),
+            "pause_distribution_df": pd.DataFrame(),
+            "speaker_df": pd.DataFrame(),
+            "speaker_turns_df": pd.DataFrame(),
+            "filler_df": pd.DataFrame(),
+            "sentence_length_df": pd.DataFrame(),
+            "confidence_distribution_df": pd.DataFrame(),
+            "engagement_df": pd.DataFrame(),
+            "low_energy_df": pd.DataFrame(),
+            "burst_df": pd.DataFrame(),
+            "burst_distribution_df": pd.DataFrame(),
+            "topic_timeline_df": pd.DataFrame(),
+            "named_entities_df": pd.DataFrame(),
+            "numbers_df": pd.DataFrame(),
+            "interruptions_df": pd.DataFrame(),
+            "response_time_df": pd.DataFrame(),
+            "key_moments_df": pd.DataFrame(),
+            "replay_navigation_df": pd.DataFrame(),
             "segment_mix_df": pd.DataFrame(),
             "terms_df": pd.DataFrame(),
             "summary": {},
@@ -1094,6 +1308,76 @@ def build_transcript_insights(transcript_payload: Dict[str, Any]) -> Dict[str, A
 
     transcript = _extract_transcript_object(transcript_payload)
     ordered_df = segments_df.sort_values(by=["start_seconds", "end_seconds"], na_position="last").reset_index(drop=True)
+    transcript_duration_seconds = _coerce_seconds(transcript.get("duration_seconds"))
+    bucket_size_seconds = 60
+
+    word_rows: List[Dict[str, Any]] = []
+    for word in _extract_transcript_words(transcript):
+        word_text = str(word.get("word") or word.get("text") or "").strip()
+        start_seconds = _coerce_seconds(word.get("start") or word.get("start_time"))
+        end_seconds = _coerce_seconds(word.get("end") or word.get("end_time"))
+        speaker = word.get("_speaker")
+        if speaker in (None, ""):
+            for key in ("speaker", "speaker_id", "speaker_name"):
+                if key in word and word.get(key) not in (None, ""):
+                    speaker = word.get(key)
+                    break
+        if not word_text or start_seconds is None or end_seconds is None:
+            continue
+        word_rows.append(
+            {
+                "word": word_text,
+                "start_seconds": start_seconds,
+                "end_seconds": end_seconds,
+                "duration_seconds": max(end_seconds - start_seconds, 0.0),
+                "speaker": str(speaker).strip() if speaker not in (None, "") else "Unknown speaker",
+                "confidence": _coerce_seconds(word.get("confidence")),
+            }
+        )
+    words_df = (
+        pd.DataFrame(word_rows).sort_values(by=["start_seconds", "end_seconds"], na_position="last").reset_index(drop=True)
+        if word_rows else pd.DataFrame(columns=["word", "start_seconds", "end_seconds", "duration_seconds", "speaker", "confidence"])
+    )
+    if not words_df.empty:
+        words_df["bucket_start_seconds"] = words_df["start_seconds"].apply(lambda value: _bucket_seconds(value, bucket_size_seconds))
+        words_df["bucket_label"] = words_df["bucket_start_seconds"].apply(format_seconds_label)
+
+    sentence_rows: List[Dict[str, Any]] = []
+    for sentence in _extract_sentence_items(transcript_payload, transcript):
+        sentence_text = str(sentence.get("sentence") or sentence.get("text") or "").strip()
+        start_seconds = _coerce_seconds(sentence.get("start") or sentence.get("start_time"))
+        end_seconds = _coerce_seconds(sentence.get("end") or sentence.get("end_time"))
+        speaker = sentence.get("speaker")
+        if speaker in (None, ""):
+            speaker = _extract_speaker_value(sentence)
+        sentence_words = sentence.get("words") if isinstance(sentence.get("words"), list) else []
+        if not sentence_words and sentence_text:
+            sentence_word_count = len(re.findall(r"\S+", sentence_text))
+            avg_confidence = _coerce_seconds(sentence.get("confidence"))
+        else:
+            sentence_word_count = len([word for word in sentence_words if isinstance(word, dict)])
+            confidences = [
+                _coerce_seconds(word.get("confidence"))
+                for word in sentence_words
+                if isinstance(word, dict) and _coerce_seconds(word.get("confidence")) is not None
+            ]
+            avg_confidence = round(sum(confidences) / len(confidences), 3) if confidences else _coerce_seconds(sentence.get("confidence"))
+        sentence_rows.append(
+            {
+                "sentence": sentence_text,
+                "start_seconds": start_seconds,
+                "end_seconds": end_seconds,
+                "speaker": str(speaker).strip() if speaker not in (None, "") else "Unknown speaker",
+                "word_count": sentence_word_count,
+                "duration_seconds": max(float(end_seconds) - float(start_seconds), 0.0) if start_seconds is not None and end_seconds is not None else None,
+                "confidence": avg_confidence,
+            }
+        )
+    sentence_df = pd.DataFrame(sentence_rows)
+    if not sentence_df.empty:
+        sentence_df = sentence_df.sort_values(by=["start_seconds", "end_seconds"], na_position="last").reset_index(drop=True)
+        sentence_df["bucket_start_seconds"] = sentence_df["start_seconds"].apply(lambda value: _bucket_seconds(value, bucket_size_seconds))
+        sentence_df["bucket_label"] = sentence_df["bucket_start_seconds"].apply(format_seconds_label)
 
     timeline_rows: List[Dict[str, Any]] = []
     for _, row in ordered_df.iterrows():
@@ -1169,9 +1453,18 @@ def build_transcript_insights(transcript_payload: Dict[str, Any]) -> Dict[str, A
 
     silence_rows: List[Dict[str, Any]] = []
     pause_threshold_seconds = 0.75
-    transcript_duration_seconds = _coerce_seconds(transcript.get("duration_seconds"))
-    first_start = ordered_df["start_seconds"].dropna().min() if "start_seconds" in ordered_df.columns else None
-    last_end = ordered_df["end_seconds"].dropna().max() if "end_seconds" in ordered_df.columns else None
+    silence_source_df = words_df if not words_df.empty else ordered_df
+    first_start = silence_source_df["start_seconds"].dropna().min() if "start_seconds" in silence_source_df.columns else None
+    last_end = silence_source_df["end_seconds"].dropna().max() if "end_seconds" in silence_source_df.columns else None
+
+    def classify_pause(gap_seconds: float) -> str:
+        if gap_seconds < 0.3:
+            return "Natural flow"
+        if gap_seconds < 1.0:
+            return "Thinking pause"
+        if gap_seconds < 2.0:
+            return "Hesitation"
+        return "Strong silence"
 
     if first_start is not None and not pd.isna(first_start) and float(first_start) >= pause_threshold_seconds:
         silence_rows.append(
@@ -1181,16 +1474,21 @@ def build_transcript_insights(transcript_payload: Dict[str, Any]) -> Dict[str, A
                 "silence_start_label": format_seconds_label(0.0),
                 "silence_end_label": format_seconds_label(float(first_start)),
                 "gap_seconds": round(float(first_start), 2),
+                "pause_type": classify_pause(float(first_start)),
+                "speaker_transition": False,
+                "bucket_start_seconds": _bucket_seconds(float(first_start), bucket_size_seconds),
             }
         )
 
-    for idx in range(1, len(ordered_df.index)):
-        previous_end = ordered_df.loc[idx - 1, "end_seconds"]
-        current_start = ordered_df.loc[idx, "start_seconds"]
+    for idx in range(1, len(silence_source_df.index)):
+        previous_end = silence_source_df.loc[idx - 1, "end_seconds"]
+        current_start = silence_source_df.loc[idx, "start_seconds"]
         if pd.isna(previous_end) or pd.isna(current_start):
             continue
         gap_seconds = float(current_start) - float(previous_end)
         if gap_seconds >= pause_threshold_seconds:
+            previous_speaker = silence_source_df.loc[idx - 1, "speaker"] if "speaker" in silence_source_df.columns else None
+            current_speaker = silence_source_df.loc[idx, "speaker"] if "speaker" in silence_source_df.columns else None
             silence_rows.append(
                 {
                     "silence_start_seconds": float(previous_end),
@@ -1198,6 +1496,13 @@ def build_transcript_insights(transcript_payload: Dict[str, Any]) -> Dict[str, A
                     "silence_start_label": format_seconds_label(float(previous_end)),
                     "silence_end_label": format_seconds_label(float(current_start)),
                     "gap_seconds": round(gap_seconds, 2),
+                    "pause_type": classify_pause(gap_seconds),
+                    "speaker_transition": (
+                        previous_speaker not in (None, "")
+                        and current_speaker not in (None, "")
+                        and previous_speaker != current_speaker
+                    ),
+                    "bucket_start_seconds": _bucket_seconds(float(previous_end), bucket_size_seconds),
                 }
             )
     if (
@@ -1213,9 +1518,206 @@ def build_transcript_insights(transcript_payload: Dict[str, Any]) -> Dict[str, A
                 "silence_start_label": format_seconds_label(float(last_end)),
                 "silence_end_label": format_seconds_label(float(transcript_duration_seconds)),
                 "gap_seconds": round(float(transcript_duration_seconds) - float(last_end), 2),
+                "pause_type": classify_pause(float(transcript_duration_seconds) - float(last_end)),
+                "speaker_transition": False,
+                "bucket_start_seconds": _bucket_seconds(float(last_end), bucket_size_seconds),
             }
         )
     silence_df = pd.DataFrame(silence_rows)
+    if not silence_df.empty:
+        silence_df["bucket_label"] = silence_df["bucket_start_seconds"].apply(format_seconds_label)
+
+    pause_type_df = pd.DataFrame(columns=["pause_type", "count", "total_gap_seconds"])
+    if not silence_df.empty:
+        pause_type_df = (
+            silence_df.groupby("pause_type", as_index=False)
+            .agg(
+                count=("gap_seconds", "size"),
+                total_gap_seconds=("gap_seconds", "sum"),
+            )
+        )
+        pause_order = ["Thinking pause", "Hesitation", "Strong silence"]
+        pause_type_df["pause_type"] = pd.Categorical(
+            pause_type_df["pause_type"],
+            categories=pause_order,
+            ordered=True,
+        )
+        pause_type_df = pause_type_df.sort_values("pause_type").reset_index(drop=True)
+
+    pause_distribution_df = pd.DataFrame(columns=["duration_bin", "count"])
+    if not silence_df.empty:
+        histogram_source = silence_df.copy()
+        histogram_source["duration_bin"] = pd.cut(
+            histogram_source["gap_seconds"],
+            bins=[0.75, 1.0, 2.0, 3.0, float("inf")],
+            labels=["0.75-1s", "1-2s", "2-3s", "3s+"],
+            include_lowest=True,
+            right=False,
+        )
+        pause_distribution_df = (
+            histogram_source.groupby("duration_bin", as_index=False, observed=False)
+            .agg(count=("gap_seconds", "size"))
+        )
+
+    speaker_df = (
+        ordered_df.groupby("speaker", as_index=False)
+        .agg(
+            speaking_seconds=("duration_seconds", "sum"),
+            segments=("text", "size"),
+            words=("word_count", "sum"),
+        )
+        if "speaker" in ordered_df.columns
+        else pd.DataFrame(columns=["speaker", "speaking_seconds", "segments", "words"])
+    )
+    if not speaker_df.empty:
+        total_speaking = float(speaker_df["speaking_seconds"].fillna(0).sum())
+        speaker_df["speaking_seconds"] = speaker_df["speaking_seconds"].fillna(0.0)
+        speaker_df["speaking_label"] = speaker_df["speaking_seconds"].apply(format_seconds_label)
+        speaker_df["share_pct"] = speaker_df["speaking_seconds"].apply(
+            lambda value: round((float(value) / total_speaking) * 100, 1) if total_speaking > 0 else 0.0
+        )
+        speaker_df = speaker_df.sort_values(by=["speaking_seconds", "words"], ascending=[False, False]).reset_index(drop=True)
+
+    speaker_turns_df = ordered_df.copy()
+    if not speaker_turns_df.empty:
+        speaker_turns_df["end_seconds"] = speaker_turns_df["end_seconds"].fillna(speaker_turns_df["start_seconds"])
+        speaker_turns_df["duration_seconds"] = speaker_turns_df["duration_seconds"].fillna(0.0)
+        speaker_turns_df["excerpt"] = speaker_turns_df["text"].fillna("").astype(str).str.slice(0, 90)
+
+    normalized_text = " ".join(words_df["word"].astype(str).tolist()).lower() if not words_df.empty else " ".join(ordered_df["text"].fillna("").astype(str).tolist()).lower()
+    normalized_text = normalized_text.replace("’", "'")
+    filler_patterns = {
+        "uh": r"\buh+\b",
+        "um": r"\bum+\b",
+        "you know": r"\byou know\b",
+        "so": r"\bso\b",
+    }
+    filler_rows = []
+    total_words = int(ordered_df["word_count"].sum())
+    for filler, pattern in filler_patterns.items():
+        count = len(re.findall(pattern, normalized_text))
+        filler_rows.append(
+            {
+                "filler": filler,
+                "count": count,
+                "per_1000_words": round((count / total_words) * 1000, 2) if total_words > 0 else 0.0,
+            }
+        )
+    filler_df = pd.DataFrame(filler_rows).sort_values(by=["count", "filler"], ascending=[False, True]).reset_index(drop=True)
+
+    sentence_length_df = pd.DataFrame(columns=["sentence_length_bin", "count"])
+    if not sentence_df.empty:
+        sentence_length_working = sentence_df.copy()
+        sentence_length_working["sentence_length_bin"] = pd.cut(
+            sentence_length_working["word_count"],
+            bins=[0, 5, 10, 20, 30, float("inf")],
+            labels=["1-5", "6-10", "11-20", "21-30", "31+"],
+            include_lowest=True,
+            right=True,
+        )
+        sentence_length_df = (
+            sentence_length_working.groupby("sentence_length_bin", as_index=False, observed=False)
+            .agg(count=("word_count", "size"))
+        )
+
+    confidence_distribution_df = pd.DataFrame(columns=["confidence_bin", "count"])
+    if not words_df.empty and "confidence" in words_df.columns:
+        confidence_working = words_df.dropna(subset=["confidence"]).copy()
+        if not confidence_working.empty:
+            confidence_working["confidence_bin"] = pd.cut(
+                confidence_working["confidence"],
+                bins=[0.0, 0.2, 0.4, 0.6, 0.8, 1.01],
+                labels=["0.0-0.2", "0.2-0.4", "0.4-0.6", "0.6-0.8", "0.8-1.0"],
+                include_lowest=True,
+                right=False,
+            )
+            confidence_distribution_df = (
+                confidence_working.groupby("confidence_bin", as_index=False, observed=False)
+                .agg(count=("confidence", "size"))
+            )
+
+    interruption_rows: List[Dict[str, Any]] = []
+    response_rows: List[Dict[str, Any]] = []
+    for idx in range(1, len(ordered_df.index)):
+        prev_row = ordered_df.loc[idx - 1]
+        curr_row = ordered_df.loc[idx]
+        if prev_row.get("speaker") == curr_row.get("speaker"):
+            continue
+        prev_end = prev_row.get("end_seconds")
+        curr_start = curr_row.get("start_seconds")
+        if pd.isna(prev_end) or pd.isna(curr_start):
+            continue
+        gap_seconds = round(float(curr_start) - float(prev_end), 3)
+        response_rows.append(
+            {
+                "from_speaker": prev_row.get("speaker"),
+                "to_speaker": curr_row.get("speaker"),
+                "gap_seconds": gap_seconds,
+                "from_end_label": format_seconds_label(float(prev_end)),
+                "to_start_label": format_seconds_label(float(curr_start)),
+            }
+        )
+        if gap_seconds <= 0.2:
+            interruption_rows.append(
+                {
+                    "from_speaker": prev_row.get("speaker"),
+                    "to_speaker": curr_row.get("speaker"),
+                    "gap_seconds": gap_seconds,
+                    "kind": "Overlap" if gap_seconds < 0 else "Rapid handoff",
+                    "time_seconds": float(curr_start),
+                    "time_label": format_seconds_label(float(curr_start)),
+                }
+            )
+    interruptions_df = pd.DataFrame(interruption_rows)
+    response_time_df = pd.DataFrame(response_rows)
+    if not response_time_df.empty:
+        response_time_df["speaker_pair"] = response_time_df["from_speaker"].astype(str) + " -> " + response_time_df["to_speaker"].astype(str)
+    if not interruptions_df.empty:
+        interruptions_df["speaker_pair"] = interruptions_df["from_speaker"].astype(str) + " -> " + interruptions_df["to_speaker"].astype(str)
+
+    burst_rows: List[Dict[str, Any]] = []
+    if not ordered_df.empty:
+        current_burst = None
+        for _, row in ordered_df.iterrows():
+            start_seconds = row.get("start_seconds")
+            end_seconds = row.get("end_seconds")
+            if pd.isna(start_seconds) or pd.isna(end_seconds):
+                continue
+            if current_burst is None:
+                current_burst = {
+                    "speaker": row.get("speaker"),
+                    "start_seconds": float(start_seconds),
+                    "end_seconds": float(end_seconds),
+                    "word_count": int(row.get("word_count") or 0),
+                }
+                continue
+            gap_from_previous = float(start_seconds) - float(current_burst["end_seconds"])
+            if row.get("speaker") == current_burst["speaker"] and gap_from_previous < pause_threshold_seconds:
+                current_burst["end_seconds"] = float(end_seconds)
+                current_burst["word_count"] += int(row.get("word_count") or 0)
+            else:
+                burst_rows.append(current_burst)
+                current_burst = {
+                    "speaker": row.get("speaker"),
+                    "start_seconds": float(start_seconds),
+                    "end_seconds": float(end_seconds),
+                    "word_count": int(row.get("word_count") or 0),
+                }
+        if current_burst is not None:
+            burst_rows.append(current_burst)
+    burst_df = pd.DataFrame(burst_rows)
+    burst_distribution_df = pd.DataFrame(columns=["burst_duration_bin", "count"])
+    if not burst_df.empty:
+        burst_df["duration_seconds"] = (burst_df["end_seconds"] - burst_df["start_seconds"]).round(2)
+        burst_df["start_label"] = burst_df["start_seconds"].apply(format_seconds_label)
+        burst_df["burst_duration_bin"] = pd.cut(
+            burst_df["duration_seconds"],
+            bins=[0, 10, 30, 60, float("inf")],
+            labels=["0-10s", "10-30s", "30-60s", "60s+"],
+            include_lowest=True,
+            right=False,
+        )
+        burst_distribution_df = burst_df.groupby("burst_duration_bin", as_index=False, observed=False).agg(count=("speaker", "size"))
 
     segment_mix_df = ordered_df.copy()
     segment_mix_df["segment_style"] = segment_mix_df["duration_seconds"].apply(
@@ -1258,6 +1760,269 @@ def build_transcript_insights(transcript_payload: Dict[str, Any]) -> Dict[str, A
     if not valid_starts.empty and not valid_ends.empty:
         full_span_seconds = max(float(valid_ends.max()) - float(valid_starts.min()), 0.0)
 
+    named_entity_rows = []
+    for entity in _extract_named_entity_items(transcript_payload):
+        entity_text = str(entity.get("text") or "").strip()
+        entity_type = str(entity.get("entity_type") or entity.get("type") or "Unknown").strip()
+        start_seconds = _coerce_seconds(entity.get("start"))
+        if not entity_text:
+            continue
+        named_entity_rows.append(
+            {
+                "entity": entity_text,
+                "entity_type": entity_type,
+                "start_seconds": start_seconds,
+                "time_label": format_seconds_label(start_seconds),
+            }
+        )
+    named_entities_df = pd.DataFrame(named_entity_rows)
+    if not named_entities_df.empty:
+        named_entities_df = (
+            named_entities_df.groupby(["entity", "entity_type"], as_index=False)
+            .agg(
+                count=("entity", "size"),
+                first_seen_seconds=("start_seconds", "min"),
+            )
+            .sort_values(by=["count", "first_seen_seconds", "entity"], ascending=[False, True, True])
+            .reset_index(drop=True)
+        )
+        named_entities_df["first_seen_label"] = named_entities_df["first_seen_seconds"].apply(format_seconds_label)
+
+    numbers_rows = []
+    number_pattern = re.compile(r"(?<!\w)(?:\$?\d+(?:[.,]\d+)?%?|\d+\s?(?:k|m|b))(?!\w)", re.IGNORECASE)
+    source_for_numbers = sentence_df if not sentence_df.empty else ordered_df
+    for _, row in source_for_numbers.iterrows():
+        text = str(row.get("sentence") or row.get("text") or "").strip()
+        if not text:
+            continue
+        matches = number_pattern.findall(text)
+        for match in matches:
+            cleaned = str(match).strip()
+            number_type = "Percentage" if "%" in cleaned else "Currency" if "$" in cleaned else "Metric"
+            numbers_rows.append(
+                {
+                    "mention": cleaned,
+                    "kind": number_type,
+                    "speaker": row.get("speaker"),
+                    "time_seconds": row.get("start_seconds"),
+                    "time_label": format_seconds_label(_coerce_seconds(row.get("start_seconds"))),
+                    "context": text[:140],
+                }
+            )
+    numbers_df = pd.DataFrame(numbers_rows)
+    if not numbers_df.empty:
+        numbers_df = numbers_df.drop_duplicates(subset=["mention", "time_label", "context"]).reset_index(drop=True)
+
+    topic_rows = []
+    if not ordered_df.empty:
+        topic_working = ordered_df.copy()
+        topic_working["bucket_start_seconds"] = topic_working["start_seconds"].apply(lambda value: _bucket_seconds(value, bucket_size_seconds))
+        for bucket_start, bucket_df in topic_working.groupby("bucket_start_seconds"):
+            bucket_terms = extract_meaningful_terms_from_series(bucket_df["text"], top_n=1)
+            top_topic = bucket_terms.iloc[0]["term"] if not bucket_terms.empty else None
+            dominant_speaker = (
+                bucket_df.groupby("speaker")["duration_seconds"].sum().sort_values(ascending=False).index[0]
+                if "speaker" in bucket_df.columns and not bucket_df.empty else None
+            )
+            topic_rows.append(
+                {
+                    "bucket_start_seconds": bucket_start,
+                    "bucket_label": format_seconds_label(bucket_start),
+                    "topic": top_topic or "General discussion",
+                    "speaker": dominant_speaker,
+                }
+            )
+    topic_timeline_df = pd.DataFrame(topic_rows)
+
+    engagement_df = timeline_df.copy()
+    if not engagement_df.empty:
+        pause_by_bucket = (
+            silence_df.groupby("bucket_start_seconds", as_index=False)
+            .agg(
+                pause_seconds=("gap_seconds", "sum"),
+                pause_count=("gap_seconds", "size"),
+            )
+            if not silence_df.empty else pd.DataFrame(columns=["bucket_start_seconds", "pause_seconds", "pause_count"])
+        )
+        if not interruptions_df.empty:
+            interruptions_by_bucket = interruptions_df.copy()
+            interruptions_by_bucket["bucket_start_seconds"] = interruptions_by_bucket["time_seconds"].apply(
+                lambda value: _bucket_seconds(_coerce_seconds(value), bucket_size_seconds)
+            )
+            interruptions_by_bucket = interruptions_by_bucket.groupby("bucket_start_seconds", as_index=False).agg(
+                interruption_count=("kind", "size")
+            )
+        else:
+            interruptions_by_bucket = pd.DataFrame(columns=["bucket_start_seconds", "interruption_count"])
+
+        engagement_df = engagement_df.rename(columns={"minute_bucket": "bucket_index"})
+        engagement_df["bucket_start_seconds"] = engagement_df["bucket_index"] * 60
+        engagement_df = engagement_df.merge(pause_by_bucket, on="bucket_start_seconds", how="left")
+        engagement_df = engagement_df.merge(interruptions_by_bucket, on="bucket_start_seconds", how="left")
+        engagement_df["pause_seconds"] = engagement_df["pause_seconds"].fillna(0.0)
+        engagement_df["pause_count"] = engagement_df["pause_count"].fillna(0).astype(int)
+        engagement_df["interruption_count"] = engagement_df["interruption_count"].fillna(0).astype(int)
+        engagement_df["bucket_label"] = engagement_df["bucket_start_seconds"].apply(format_seconds_label)
+        engagement_df["silence_ratio"] = engagement_df["pause_seconds"].apply(lambda value: min(float(value) / bucket_size_seconds, 1.0))
+        engagement_df["pace_delta"] = engagement_df["words_per_minute"].diff().abs().fillna(0.0)
+
+        wpm_low = _safe_quantile(engagement_df["words_per_minute"], 0.1, 0.0)
+        wpm_high = _safe_quantile(engagement_df["words_per_minute"], 0.9, 1.0)
+        delta_high = _safe_quantile(engagement_df["pace_delta"], 0.9, 1.0)
+        pause_high = _safe_quantile(engagement_df["pause_seconds"], 0.9, 1.0)
+        interrupt_high = max(float(engagement_df["interruption_count"].max()), 1.0)
+
+        engagement_scores = []
+        low_energy_labels = []
+        clarity_scores = []
+        cognitive_load_values = []
+        for _, row in engagement_df.iterrows():
+            pace_score = _min_max_scale(float(row["words_per_minute"]), wpm_low, wpm_high)
+            silence_penalty = _min_max_scale(float(row["pause_seconds"]), 0.0, pause_high)
+            interruption_score = _min_max_scale(float(row["interruption_count"]), 0.0, interrupt_high)
+            variation_score = _min_max_scale(float(row["pace_delta"]), 0.0, delta_high)
+
+            engagement_score = round(((pace_score * 0.45) + ((1 - silence_penalty) * 0.35) + (interruption_score * 0.2)) * 100, 1)
+            cognitive_load = round(((silence_penalty * 0.45) + ((1 - pace_score) * 0.2) + (variation_score * 0.2)) * 100, 1)
+            clarity_score = round((((1 - silence_penalty) * 0.3) + pace_score * 0.35 + ((1 - min(variation_score, 1.0)) * 0.1)) * 100, 1)
+            engagement_scores.append(engagement_score)
+            cognitive_load_values.append(cognitive_load)
+            clarity_scores.append(clarity_score)
+
+            if row["pause_seconds"] >= 8 or (row["words_per_minute"] <= wpm_low and row["pause_seconds"] >= 4):
+                low_energy_labels.append("Low energy")
+            elif row["pause_seconds"] >= 4:
+                low_energy_labels.append("Watch")
+            else:
+                low_energy_labels.append("")
+
+        engagement_df["engagement_score"] = engagement_scores
+        engagement_df["cognitive_load_index"] = cognitive_load_values
+        engagement_df["clarity_score"] = clarity_scores
+        engagement_df["energy_label"] = low_energy_labels
+
+        filler_total = float(filler_df["count"].sum()) if not filler_df.empty else 0.0
+        filler_per_bucket = pd.DataFrame(columns=["bucket_start_seconds", "filler_count"])
+        if not words_df.empty:
+            filler_words = {"uh", "um", "so"}
+            filler_phrase_counts = []
+            filler_word_working = words_df.copy()
+            filler_word_working["normalized_word"] = filler_word_working["word"].str.lower().str.replace(r"[^\w']+", "", regex=True)
+            filler_hits = filler_word_working[filler_word_working["normalized_word"].isin(filler_words)]
+            if not filler_hits.empty:
+                filler_phrase_counts.append(
+                    filler_hits.groupby("bucket_start_seconds", as_index=False).agg(filler_count=("normalized_word", "size"))
+                )
+            if not sentence_df.empty:
+                sentence_you_know = sentence_df[sentence_df["sentence"].str.lower().str.contains(r"\byou know\b", regex=True, na=False)]
+                if not sentence_you_know.empty:
+                    filler_phrase_counts.append(
+                        sentence_you_know.groupby("bucket_start_seconds", as_index=False).agg(filler_count=("sentence", "size"))
+                    )
+            if filler_phrase_counts:
+                filler_per_bucket = pd.concat(filler_phrase_counts, ignore_index=True).groupby("bucket_start_seconds", as_index=False).agg(
+                    filler_count=("filler_count", "sum")
+                )
+        engagement_df = engagement_df.merge(filler_per_bucket, on="bucket_start_seconds", how="left")
+        engagement_df["filler_count"] = engagement_df["filler_count"].fillna(0).astype(int)
+        engagement_df["clarity_score"] = (
+            engagement_df["clarity_score"] - engagement_df["filler_count"].apply(lambda value: min(value * 3, 20))
+        ).clip(lower=0, upper=100)
+        engagement_df["cognitive_load_index"] = (
+            engagement_df["cognitive_load_index"] + engagement_df["filler_count"].apply(lambda value: min(value * 3, 20))
+        ).clip(lower=0, upper=100)
+
+    low_energy_df = engagement_df[engagement_df["energy_label"] != ""].copy() if not engagement_df.empty else pd.DataFrame()
+
+    key_moment_rows = []
+    strong_statement_pattern = re.compile(r"\b(?:important|key|must|need to|significant|critical|huge)\b", re.IGNORECASE)
+    high_pace_threshold = _safe_quantile(pace_df["segment_wpm"], 0.9, 0.0) if not pace_df.empty else 0.0
+    number_lookup = set()
+    if not numbers_df.empty:
+        for _, number_row in numbers_df.iterrows():
+            number_lookup.add((number_row.get("time_label"), number_row.get("context")))
+    entity_texts = set(named_entities_df["entity"].head(25).astype(str).tolist()) if not named_entities_df.empty else set()
+    source_for_moments = sentence_df if not sentence_df.empty else ordered_df
+    for _, row in source_for_moments.iterrows():
+        text = str(row.get("sentence") or row.get("text") or "").strip()
+        if not text:
+            continue
+        score = 0
+        reasons = []
+        if number_pattern.search(text):
+            score += 2
+            reasons.append("numbers")
+        if strong_statement_pattern.search(text):
+            score += 2
+            reasons.append("strong statement")
+        if entity_texts and any(entity.lower() in text.lower() for entity in list(entity_texts)[:10]):
+            score += 1
+            reasons.append("named entity")
+        pace_value = 0.0
+        if row.get("duration_seconds") and row.get("word_count"):
+            pace_value = (float(row.get("word_count")) / float(row.get("duration_seconds"))) * 60 if float(row.get("duration_seconds")) > 0 else 0.0
+        if pace_value >= high_pace_threshold and high_pace_threshold > 0:
+            score += 1
+            reasons.append("pace spike")
+        if score > 0:
+            key_moment_rows.append(
+                {
+                    "time_seconds": row.get("start_seconds"),
+                    "time_label": format_seconds_label(_coerce_seconds(row.get("start_seconds"))),
+                    "speaker": row.get("speaker"),
+                    "score": score,
+                    "reasons": ", ".join(reasons),
+                    "excerpt": text[:160],
+                }
+            )
+    key_moments_df = pd.DataFrame(key_moment_rows)
+    if not key_moments_df.empty:
+        key_moments_df = key_moments_df.sort_values(by=["score", "time_seconds"], ascending=[False, True]).head(20).reset_index(drop=True)
+
+    replay_navigation_df = pd.DataFrame()
+    if not engagement_df.empty:
+        dominant_speakers_by_bucket = (
+            ordered_df.assign(bucket_start_seconds=ordered_df["start_seconds"].apply(lambda value: _bucket_seconds(value, bucket_size_seconds)))
+            .groupby(["bucket_start_seconds", "speaker"], as_index=False)
+            .agg(speaking_seconds=("duration_seconds", "sum"))
+        )
+        dominant_speaker_df = pd.DataFrame(columns=["bucket_start_seconds", "dominant_speaker"])
+        if not dominant_speakers_by_bucket.empty:
+            dominant_speaker_df = dominant_speakers_by_bucket.sort_values(
+                by=["bucket_start_seconds", "speaking_seconds"], ascending=[True, False]
+            ).drop_duplicates(subset=["bucket_start_seconds"]).rename(columns={"speaker": "dominant_speaker"})[
+                ["bucket_start_seconds", "dominant_speaker"]
+            ]
+        key_counts = pd.DataFrame(columns=["bucket_start_seconds", "key_moments"])
+        if not key_moments_df.empty:
+            key_counts = key_moments_df.copy()
+            key_counts["bucket_start_seconds"] = key_counts["time_seconds"].apply(lambda value: _bucket_seconds(_coerce_seconds(value), bucket_size_seconds))
+            key_counts = key_counts.groupby("bucket_start_seconds", as_index=False).agg(key_moments=("score", "size"))
+        replay_navigation_df = engagement_df[[
+            "bucket_start_seconds",
+            "bucket_label",
+            "engagement_score",
+            "clarity_score",
+            "cognitive_load_index",
+            "pause_seconds",
+            "words_per_minute",
+            "energy_label",
+        ]].merge(topic_timeline_df[["bucket_start_seconds", "topic"]], on="bucket_start_seconds", how="left")
+        replay_navigation_df = replay_navigation_df.merge(dominant_speaker_df, on="bucket_start_seconds", how="left")
+        replay_navigation_df = replay_navigation_df.merge(key_counts, on="bucket_start_seconds", how="left")
+        replay_navigation_df["key_moments"] = replay_navigation_df["key_moments"].fillna(0).astype(int)
+        replay_navigation_df["highlight"] = replay_navigation_df.apply(
+            lambda row: "Key moment" if row["key_moments"] > 0
+            else "Low energy" if str(row["energy_label"]).strip()
+            else "Steady",
+            axis=1,
+        )
+
+    avg_pause_seconds = round(float(silence_df["gap_seconds"].mean()), 2) if not silence_df.empty else 0.0
+    avg_response_seconds = round(float(response_time_df["gap_seconds"].mean()), 2) if not response_time_df.empty else 0.0
+    interruption_count = int(len(interruptions_df.index)) if not interruptions_df.empty else 0
+    filler_total = int(filler_df["count"].sum()) if not filler_df.empty else 0
+
     summary = {
         "total_segments": int(len(ordered_df.index)),
         "total_words": total_words,
@@ -1267,15 +2032,48 @@ def build_transcript_insights(transcript_payload: Dict[str, Any]) -> Dict[str, A
         "silence_count": int(len(silence_df.index)),
         "total_silence_seconds": round(float(silence_df["gap_seconds"].sum()), 2) if not silence_df.empty else 0.0,
         "longest_silence_seconds": round(float(silence_df["gap_seconds"].max()), 2) if not silence_df.empty else 0.0,
+        "avg_pause_seconds": avg_pause_seconds,
+        "global_wpm": round((total_words / total_speaking_seconds) * 60, 1) if total_speaking_seconds > 0 else 0.0,
+        "avg_response_seconds": avg_response_seconds,
+        "interruption_count": interruption_count,
+        "filler_total": filler_total,
+        "entity_count": int(named_entities_df["count"].sum()) if not named_entities_df.empty else 0,
+        "kpi_mentions": int(len(numbers_df.index)) if not numbers_df.empty else 0,
+        "avg_confidence": round(float(words_df["confidence"].dropna().mean()), 3) if not words_df.empty and not words_df["confidence"].dropna().empty else 0.0,
+        "avg_sentence_length": round(float(sentence_df["word_count"].mean()), 1) if not sentence_df.empty else 0.0,
+        "avg_engagement_score": round(float(engagement_df["engagement_score"].mean()), 1) if not engagement_df.empty else 0.0,
+        "avg_clarity_score": round(float(engagement_df["clarity_score"].mean()), 1) if not engagement_df.empty else 0.0,
+        "avg_cognitive_load_index": round(float(engagement_df["cognitive_load_index"].mean()), 1) if not engagement_df.empty else 0.0,
+        "low_energy_zone_count": int(len(low_energy_df.index)) if not low_energy_df.empty else 0,
         "top_term": terms_df.iloc[0]["term"] if not terms_df.empty else None,
         "dominant_segment_style": segment_mix_df.iloc[0]["segment_style"] if not segment_mix_df.empty else None,
     }
 
     return {
         "segments_df": ordered_df,
+        "words_df": words_df,
+        "sentence_df": sentence_df,
         "timeline_df": timeline_df,
         "pace_df": pace_df,
         "silence_df": silence_df,
+        "pause_type_df": pause_type_df,
+        "pause_distribution_df": pause_distribution_df,
+        "speaker_df": speaker_df,
+        "speaker_turns_df": speaker_turns_df,
+        "filler_df": filler_df,
+        "sentence_length_df": sentence_length_df,
+        "confidence_distribution_df": confidence_distribution_df,
+        "engagement_df": engagement_df,
+        "low_energy_df": low_energy_df,
+        "burst_df": burst_df,
+        "burst_distribution_df": burst_distribution_df,
+        "topic_timeline_df": topic_timeline_df,
+        "named_entities_df": named_entities_df,
+        "numbers_df": numbers_df,
+        "interruptions_df": interruptions_df,
+        "response_time_df": response_time_df,
+        "key_moments_df": key_moments_df,
+        "replay_navigation_df": replay_navigation_df,
         "segment_mix_df": segment_mix_df,
         "terms_df": terms_df,
         "summary": summary,
