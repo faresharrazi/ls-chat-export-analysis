@@ -1109,12 +1109,13 @@ if st.session_state.get("smart_recap_in_progress", False):
             prompt_text = build_smart_recap_prompt(requested_tone)
             smart_recap_bundle[requested_tone] = analyze_with_openai(
                 api_key=api_analysis_key,
-                model="gpt-4o",
+                model=DEFAULT_OPENAI_MODEL,
                 system_prompt=prompt_text,
-                output_language=OUTPUT_LANGUAGE_MAP.get(st.session_state.get("analysis_language", output_language_label), output_language_label),
-                selected_sources=["transcript"],
-                derived_stats=build_derived_stats(transcript_payload=transcript_payload),
-                transcript_payload=build_compact_transcript_payload_for_llm(transcript_payload),
+                output_language="English",
+                selected_sources=[],
+                derived_stats={},
+                transcript_text=build_transcript_plain_text(transcript_payload),
+                max_tokens=900,
             )
     except requests.HTTPError as exc:
         logger.exception("Smart recap request failed")
