@@ -22,7 +22,7 @@ Style guidelines:
 - Use contrast: human uncertainty vs system stability, chaos vs calm, fiddling vs reliability.
 - If the transcript includes repeated words, hesitation, switching languages, clicking, scrolling, or stress-testing behavior, use those as comedic material.
 - You may use 1-2 exaggerated metaphors or ironic observations, but keep them grounded in the actual session.
-- Include a turning-point beat such as: "And that's when it hits you..."
+- Include a turning-point beat.
 - End with a strong, memorable punchline or ironic closing insight.
 
 COMEDIC ENGINE (CRITICAL):
@@ -43,13 +43,9 @@ You must actively construct humor using these techniques:
 3. RHYTHM & PACING (required)
 - Break sentences aggressively
 - Use 1-line sentences for impact
-- Example:
-  "We click.
-   We scroll.
-   We try again."
 
 4. CALLBACKS (required if pattern exists)
-- If a word repeats in transcript (e.g. "okay", "yeah"), reuse it humorously
+- If a word repeats in transcript, reuse it humorously
 - Turn repetition into a running joke
 
 5. PERSONIFICATION (high impact)
@@ -57,8 +53,7 @@ You must actively construct humor using these techniques:
 - Example: "like it’s been waiting its whole life for this moment"
 
 6. TURNING POINT (required)
-- Include a realization moment:
-  "And that’s when it hits you…"
+- Include a realization moment
 
 7. STRONG CLOSING LINE (required)
 - End with a sharp, ironic insight
