@@ -18,6 +18,12 @@ from livestorm_app.config import (
     get_runtime_secret,
     render_header,
 )
+from livestorm_app.db import (
+    database_enabled,
+    ensure_database_schema,
+    fetch_cached_session,
+    upsert_cached_session,
+)
 from livestorm_app.renderers import (
     render_analysis_block,
     render_chat_questions_block,
@@ -28,12 +34,14 @@ from livestorm_app.renderers import (
 from livestorm_app.services import (
     analyze_with_openai,
     build_analysis_prompt,
+    build_chat_df_from_payload,
     build_smart_recap_prompt,
     build_compact_chat_payload_for_llm,
     build_compact_questions_payload_for_llm,
     build_compact_transcript_payload_for_llm,
     build_deep_analysis_prompt,
     build_derived_stats,
+    build_questions_df_from_payload,
     build_transcript_plain_text,
     build_transcript_job_debug_details,
     build_event_session_options,
@@ -48,6 +56,8 @@ from livestorm_app.services import (
     format_livestorm_http_error,
     mark_analysis_source_defaults,
     build_transcript_display_text,
+    translate_content_repurpose_bundle_with_openai,
+    translate_markdown_with_openai,
 )
 from livestorm_app.state import (
     EVENT_ID_PATTERN,
@@ -109,6 +119,121 @@ def build_failed_job_result(message: str, *, details: Dict[str, Any] | None = No
     return {"ok": False, "message": message, "details": details or {}}
 
 
+def build_content_repurpose_md(bundle_by_language: Dict[str, Dict[str, str]]) -> str:
+    if not isinstance(bundle_by_language, dict):
+        return ""
+    return "\n\n---\n\n".join(
+        markdown.strip()
+        for bundle in bundle_by_language.values()
+        if isinstance(bundle, dict)
+        for markdown in bundle.values()
+        if isinstance(markdown, str) and markdown.strip()
+    )
+
+
+def _normalize_text_bundle(raw_bundle: Any, fallback_text: str = "", fallback_language: str = "English") -> Dict[str, str]:
+    bundle = raw_bundle if isinstance(raw_bundle, dict) else {}
+    normalized = {
+        str(language): str(value).strip()
+        for language, value in bundle.items()
+        if isinstance(language, str) and isinstance(value, str) and str(value).strip()
+    }
+    fallback_text = str(fallback_text or "").strip()
+    if fallback_text and fallback_language not in normalized:
+        normalized[fallback_language] = fallback_text
+    return normalized
+
+
+def _get_alternate_language_text(bundle: Any, target_language: str) -> tuple[str, str]:
+    if not isinstance(bundle, dict):
+        return "", ""
+    for language, value in bundle.items():
+        if str(language) == str(target_language):
+            continue
+        text = str(value or "").strip()
+        if text:
+            return str(language), text
+    return "", ""
+
+
+def _get_alternate_language_bundle(bundle_by_language: Any, target_language: str) -> tuple[str, Dict[str, str]]:
+    if not isinstance(bundle_by_language, dict):
+        return "", {}
+    for language, bundle in bundle_by_language.items():
+        if str(language) == str(target_language) or not isinstance(bundle, dict):
+            continue
+        normalized_bundle = {
+            key: str(value or "").strip()
+            for key, value in bundle.items()
+            if key in {"summary", "blog", "email", "social_media"}
+        }
+        if any(normalized_bundle.values()):
+            return str(language), normalized_bundle
+    return "", {}
+
+
+def load_cached_session_into_state(api_key: str, session_id: str, cached_session: Dict[str, Any]) -> None:
+    if not isinstance(cached_session, dict):
+        return
+
+    clear_api_error_details()
+    clear_background_notice()
+    st.session_state["current_session_id"] = str(session_id or "")
+
+    chat_payload = cached_session.get("chat_payload")
+    questions_payload = cached_session.get("questions_payload")
+    transcript_payload = cached_session.get("transcript_payload")
+    analysis_bundle = _normalize_text_bundle(cached_session.get("analysis_bundle"), str(cached_session.get("analysis_md") or ""))
+    deep_analysis_bundle = _normalize_text_bundle(cached_session.get("deep_analysis_bundle"), str(cached_session.get("deep_analysis_md") or ""))
+    content_repurpose_bundle = cached_session.get("content_repurpose_bundle")
+    smart_recap_bundle = cached_session.get("smart_recap_bundle")
+    selected_analysis_language = str(st.session_state.get("analysis_language", "English"))
+
+    if isinstance(chat_payload, dict):
+        st.session_state["chat_payload"] = chat_payload
+        st.session_state["chat_df"] = build_chat_df_from_payload(chat_payload)
+        st.session_state["last_fetched_chat_session_id"] = str(session_id or "")
+        mark_analysis_source_defaults(st.session_state, include_chat=True)
+    if isinstance(questions_payload, dict):
+        st.session_state["questions_payload"] = questions_payload
+        st.session_state["questions_df"] = build_questions_df_from_payload(questions_payload)
+        if isinstance(st.session_state.get("questions_df"), pd.DataFrame):
+            mark_analysis_source_defaults(st.session_state, include_questions=True)
+
+    if isinstance(transcript_payload, dict):
+        transcript_text = build_transcript_display_text(transcript_payload)
+        st.session_state["transcript_payload"] = transcript_payload
+        st.session_state["transcript_text"] = transcript_text
+        st.session_state["last_fetched_transcript_signature"] = build_transcript_request_signature(str(session_id or ""))
+        mark_analysis_source_defaults(st.session_state, include_transcript=True)
+        st.session_state["analysis_include_transcript_pending"] = True
+
+    st.session_state["analysis_bundle"] = analysis_bundle
+    st.session_state["analysis_md"] = str(analysis_bundle.get(selected_analysis_language) or "")
+    st.session_state["analysis_ran"] = bool(st.session_state["analysis_md"].strip())
+    st.session_state["deep_analysis_bundle"] = deep_analysis_bundle
+    st.session_state["deep_analysis_md"] = str(deep_analysis_bundle.get(selected_analysis_language) or "")
+    st.session_state["deep_analysis_ran"] = bool(st.session_state["deep_analysis_md"].strip())
+
+    if isinstance(content_repurpose_bundle, dict):
+        st.session_state["content_repurpose_bundle"] = content_repurpose_bundle
+        st.session_state["content_repurpose_md"] = build_content_repurpose_md(content_repurpose_bundle)
+        st.session_state["content_repurpose_ran"] = bool(st.session_state["content_repurpose_md"].strip())
+
+    if isinstance(smart_recap_bundle, dict):
+        st.session_state["smart_recap_bundle"] = smart_recap_bundle
+        st.session_state["smart_recap_ran"] = bool(
+            any(isinstance(value, str) and value.strip() for value in smart_recap_bundle.values())
+        )
+
+
+def persist_cached_session_safely(api_key: str, session_id: str, **fields: Any) -> None:
+    try:
+        upsert_cached_session(api_key, session_id, **fields)
+    except Exception:
+        logger.exception("Failed to persist cached session data", extra={"session_id": session_id, "field_names": list(fields.keys())})
+
+
 def run_chat_questions_job(api_key: str, session_id: str) -> Dict[str, Any]:
     try:
         bundle = fetch_chat_and_questions_bundle(api_key, session_id)
@@ -152,8 +277,19 @@ def apply_chat_questions_job_result(job_result: Dict[str, Any]) -> None:
     st.session_state["fetch_in_progress"] = False
     st.session_state["chat_fetch_job_id"] = ""
     session_id = job_result.get("session_id", "")
+    api_key = st.session_state.get("api_key_input", os.getenv("LS_API_KEY", ""))
+    if session_id and api_key:
+        persist_cached_session_safely(
+            str(api_key),
+            str(session_id),
+            chat_payload=job_result.get("chat_payload"),
+            questions_payload=job_result.get("questions_payload"),
+        )
     if st.session_state.get("fetch_data_in_progress", False) and session_id:
-        start_transcript_fetch(str(session_id))
+        if isinstance(st.session_state.get("transcript_payload"), dict):
+            st.session_state["fetch_data_in_progress"] = False
+        else:
+            start_transcript_fetch(str(session_id))
 
 
 def apply_transcript_success(session_id: str, transcript_payload: Dict[str, Any]) -> None:
@@ -172,6 +308,9 @@ def apply_transcript_success(session_id: str, transcript_payload: Dict[str, Any]
     st.session_state["transcript_job_status"] = "completed"
     st.session_state["transcript_job_started_at"] = 0.0
     st.session_state["fetch_data_in_progress"] = False
+    api_key = st.session_state.get("api_key_input", os.getenv("LS_API_KEY", ""))
+    if session_id and api_key:
+        persist_cached_session_safely(str(api_key), str(session_id), transcript_payload=transcript_payload)
     mark_analysis_source_defaults(st.session_state, include_transcript=True)
     st.session_state["analysis_include_transcript_pending"] = True
 
@@ -357,6 +496,10 @@ configure_page()
 apply_brand_styles()
 init_session_state()
 render_header()
+try:
+    ensure_database_schema()
+except Exception:
+    logger.exception("Database schema initialization failed")
 
 has_chat_content = st.session_state.get("chat_df") is not None
 has_questions_content = st.session_state.get("questions_df") is not None
@@ -594,16 +737,36 @@ if fetch_data_button:
     if not api_key or not transcript_api_key or not active_session_id:
         st.error("Please provide the Livestorm API key, transcript API key, and a valid session selection.")
     else:
-        st.session_state["fetch_data_in_progress"] = True
-        st.session_state["fetch_in_progress"] = True
         st.session_state["current_session_id"] = active_session_id
-        st.session_state["chat_fetch_job_id"] = job_manager.submit(
-            "chat_questions",
-            run_chat_questions_job,
-            context={"session_id": active_session_id},
-            api_key=api_key,
-            session_id=active_session_id,
-        )
+        cached_session = None
+        if database_enabled():
+            try:
+                cached_session = fetch_cached_session(api_key, active_session_id)
+            except Exception:
+                logger.exception("Failed to load cached session", extra={"session_id": active_session_id})
+
+        if isinstance(cached_session, dict):
+            load_cached_session_into_state(api_key, active_session_id, cached_session)
+
+        has_cached_chat = isinstance(st.session_state.get("chat_payload"), dict)
+        has_cached_questions = isinstance(st.session_state.get("questions_payload"), dict)
+        has_cached_transcript = isinstance(st.session_state.get("transcript_payload"), dict)
+
+        if has_cached_chat and has_cached_questions and has_cached_transcript:
+            st.rerun()
+
+        st.session_state["fetch_data_in_progress"] = True
+        if not (has_cached_chat and has_cached_questions):
+            st.session_state["fetch_in_progress"] = True
+            st.session_state["chat_fetch_job_id"] = job_manager.submit(
+                "chat_questions",
+                run_chat_questions_job,
+                context={"session_id": active_session_id},
+                api_key=api_key,
+                session_id=active_session_id,
+            )
+        elif not has_cached_transcript:
+            start_transcript_fetch(active_session_id)
     st.rerun()
 
 payload = st.session_state.get("chat_payload")
@@ -612,16 +775,25 @@ questions_payload = st.session_state.get("questions_payload")
 questions_df = st.session_state.get("questions_df")
 transcript_payload = st.session_state.get("transcript_payload")
 transcript_text = st.session_state.get("transcript_text", "")
-analysis_md = st.session_state.get("analysis_md", "")
-analysis_ran = st.session_state.get("analysis_ran", False)
-deep_analysis_md = st.session_state.get("deep_analysis_md", "")
-deep_analysis_ran = st.session_state.get("deep_analysis_ran", False)
 content_repurpose_md = st.session_state.get("content_repurpose_md", "")
 content_repurpose_bundle = st.session_state.get("content_repurpose_bundle", {})
 content_repurpose_ran = st.session_state.get("content_repurpose_ran", False)
 smart_recap_bundle = st.session_state.get("smart_recap_bundle", {})
 smart_recap_ran = st.session_state.get("smart_recap_ran", False)
 current_session_id = st.session_state.get("current_session_id") or active_session_id
+selected_analysis_language = st.session_state.get("analysis_language", output_language_label)
+analysis_bundle = _normalize_text_bundle(st.session_state.get("analysis_bundle", {}), st.session_state.get("analysis_md", ""))
+deep_analysis_bundle = _normalize_text_bundle(st.session_state.get("deep_analysis_bundle", {}), st.session_state.get("deep_analysis_md", ""))
+analysis_md = str(analysis_bundle.get(selected_analysis_language) or "")
+analysis_ran = bool(analysis_md.strip())
+deep_analysis_md = str(deep_analysis_bundle.get(selected_analysis_language) or "")
+deep_analysis_ran = bool(deep_analysis_md.strip())
+st.session_state["analysis_bundle"] = analysis_bundle
+st.session_state["deep_analysis_bundle"] = deep_analysis_bundle
+st.session_state["analysis_md"] = analysis_md
+st.session_state["analysis_ran"] = analysis_ran
+st.session_state["deep_analysis_md"] = deep_analysis_md
+st.session_state["deep_analysis_ran"] = deep_analysis_ran
 transcript_loading = bool(st.session_state.get("transcript_fetch_in_progress", False) and st.session_state.get("transcript_job_id", ""))
 chat_questions_loading = bool(st.session_state.get("fetch_in_progress", False) and st.session_state.get("chat_fetch_job_id", ""))
 
@@ -710,25 +882,36 @@ if st.session_state.get("analysis_in_progress", False):
         st.session_state["analysis_in_progress"] = False
         st.rerun()
 
-    prompt_text = build_analysis_prompt(selected_sources)
-    derived_stats = build_derived_stats(
-        chat_df=df if "chat" in selected_sources else None,
-        questions_df=questions_df if "questions" in selected_sources else None,
-        transcript_payload=transcript_payload if "transcript" in selected_sources else None,
-    )
+    analysis_bundle = _normalize_text_bundle(st.session_state.get("analysis_bundle", {}), st.session_state.get("analysis_md", ""))
+    source_language, source_analysis_md = _get_alternate_language_text(analysis_bundle, selected_output_language)
 
     try:
-        analysis_md = analyze_with_openai(
-            api_key=api_analysis_key,
-            model=DEFAULT_OPENAI_MODEL,
-            system_prompt=prompt_text,
-            output_language=OUTPUT_LANGUAGE_MAP[selected_output_language],
-            selected_sources=selected_sources,
-            derived_stats=derived_stats,
-            raw_payload=build_compact_chat_payload_for_llm(df) if "chat" in selected_sources and isinstance(df, pd.DataFrame) else None,
-            questions_payload=build_compact_questions_payload_for_llm(questions_df) if "questions" in selected_sources and isinstance(questions_df, pd.DataFrame) else None,
-            transcript_payload=build_compact_transcript_payload_for_llm(transcript_payload) if "transcript" in selected_sources and isinstance(transcript_payload, dict) else None,
-        )
+        if source_analysis_md:
+            analysis_md = translate_markdown_with_openai(
+                api_key=api_analysis_key,
+                model=DEFAULT_OPENAI_MODEL,
+                source_markdown=source_analysis_md,
+                source_language=OUTPUT_LANGUAGE_MAP.get(source_language, source_language),
+                target_language=OUTPUT_LANGUAGE_MAP[selected_output_language],
+            )
+        else:
+            prompt_text = build_analysis_prompt(selected_sources)
+            derived_stats = build_derived_stats(
+                chat_df=df if "chat" in selected_sources else None,
+                questions_df=questions_df if "questions" in selected_sources else None,
+                transcript_payload=transcript_payload if "transcript" in selected_sources else None,
+            )
+            analysis_md = analyze_with_openai(
+                api_key=api_analysis_key,
+                model=DEFAULT_OPENAI_MODEL,
+                system_prompt=prompt_text,
+                output_language=OUTPUT_LANGUAGE_MAP[selected_output_language],
+                selected_sources=selected_sources,
+                derived_stats=derived_stats,
+                raw_payload=build_compact_chat_payload_for_llm(df) if "chat" in selected_sources and isinstance(df, pd.DataFrame) else None,
+                questions_payload=build_compact_questions_payload_for_llm(questions_df) if "questions" in selected_sources and isinstance(questions_df, pd.DataFrame) else None,
+                transcript_payload=build_compact_transcript_payload_for_llm(transcript_payload) if "transcript" in selected_sources and isinstance(transcript_payload, dict) else None,
+            )
     except requests.HTTPError as exc:
         st.error(f"Analysis API error: {exc}")
         analysis_md = ""
@@ -736,8 +919,19 @@ if st.session_state.get("analysis_in_progress", False):
         st.error(f"Analysis network error: {exc}")
         analysis_md = ""
 
-    st.session_state["analysis_md"] = analysis_md
-    st.session_state["analysis_ran"] = bool(analysis_md)
+    analysis_bundle = _normalize_text_bundle(st.session_state.get("analysis_bundle", {}), st.session_state.get("analysis_md", ""))
+    if analysis_md.strip():
+        analysis_bundle[selected_output_language] = analysis_md
+    st.session_state["analysis_bundle"] = analysis_bundle
+    st.session_state["analysis_md"] = str(analysis_bundle.get(selected_output_language) or "")
+    st.session_state["analysis_ran"] = bool(st.session_state["analysis_md"].strip())
+    if analysis_md.strip() and current_session_id and api_key:
+        persist_cached_session_safely(
+            api_key,
+            current_session_id,
+            analysis_md=analysis_md,
+            analysis_bundle=analysis_bundle,
+        )
     st.session_state["analysis_in_progress"] = False
     st.rerun()
 
@@ -758,25 +952,38 @@ if st.session_state.get("deep_analysis_in_progress", False):
         st.session_state["deep_analysis_in_progress"] = False
         st.rerun()
 
-    prompt_text = build_deep_analysis_prompt()
-    derived_stats = build_derived_stats(
-        chat_df=df,
-        questions_df=questions_df,
-        transcript_payload=transcript_payload,
-    )
+    deep_analysis_bundle = _normalize_text_bundle(st.session_state.get("deep_analysis_bundle", {}), st.session_state.get("deep_analysis_md", ""))
+    source_language, source_deep_analysis_md = _get_alternate_language_text(deep_analysis_bundle, selected_output_language)
 
     try:
-        deep_analysis_md = analyze_with_openai(
-            api_key=api_analysis_key,
-            model=DEFAULT_OPENAI_MODEL,
-            system_prompt=prompt_text,
-            output_language=OUTPUT_LANGUAGE_MAP.get(selected_output_language, selected_output_language),
-            selected_sources=["chat", "questions", "transcript"],
-            derived_stats=derived_stats,
-            raw_payload=build_compact_chat_payload_for_llm(df, max_rows=250),
-            questions_payload=build_compact_questions_payload_for_llm(questions_df, max_rows=120),
-            transcript_payload=build_compact_transcript_payload_for_llm(transcript_payload, max_segments=220),
-        )
+        if source_deep_analysis_md:
+            deep_analysis_md = translate_markdown_with_openai(
+                api_key=api_analysis_key,
+                model=DEFAULT_OPENAI_MODEL,
+                source_markdown=source_deep_analysis_md,
+                source_language=OUTPUT_LANGUAGE_MAP.get(source_language, source_language),
+                target_language=OUTPUT_LANGUAGE_MAP.get(selected_output_language, selected_output_language),
+                max_tokens=8000,
+            )
+        else:
+            prompt_text = build_deep_analysis_prompt()
+            derived_stats = build_derived_stats(
+                chat_df=df,
+                questions_df=questions_df,
+                transcript_payload=transcript_payload,
+            )
+            deep_analysis_md = analyze_with_openai(
+                api_key=api_analysis_key,
+                model="gpt-4o",
+                system_prompt=prompt_text,
+                output_language=OUTPUT_LANGUAGE_MAP.get(selected_output_language, selected_output_language),
+                selected_sources=["chat", "questions", "transcript"],
+                derived_stats=derived_stats,
+                raw_payload=build_compact_chat_payload_for_llm(df, max_rows=80),
+                questions_payload=build_compact_questions_payload_for_llm(questions_df, max_rows=40),
+                transcript_payload=build_compact_transcript_payload_for_llm(transcript_payload, max_segments=60),
+                max_tokens=2200,
+            )
     except requests.HTTPError as exc:
         logger.exception("Deep analysis request failed")
         set_api_error_details("Deep analysis", build_http_error_debug_details(exc, "Deep analysis"))
@@ -788,8 +995,19 @@ if st.session_state.get("deep_analysis_in_progress", False):
         set_api_error_message(f"Deep analysis network error: {exc}")
         deep_analysis_md = ""
 
-    st.session_state["deep_analysis_md"] = deep_analysis_md
-    st.session_state["deep_analysis_ran"] = bool(deep_analysis_md)
+    deep_analysis_bundle = _normalize_text_bundle(st.session_state.get("deep_analysis_bundle", {}), st.session_state.get("deep_analysis_md", ""))
+    if deep_analysis_md.strip():
+        deep_analysis_bundle[selected_output_language] = deep_analysis_md
+    st.session_state["deep_analysis_bundle"] = deep_analysis_bundle
+    st.session_state["deep_analysis_md"] = str(deep_analysis_bundle.get(selected_output_language) or "")
+    st.session_state["deep_analysis_ran"] = bool(st.session_state["deep_analysis_md"].strip())
+    if deep_analysis_md.strip() and current_session_id and api_key:
+        persist_cached_session_safely(
+            api_key,
+            current_session_id,
+            deep_analysis_md=deep_analysis_md,
+            deep_analysis_bundle=deep_analysis_bundle,
+        )
     st.session_state["deep_analysis_in_progress"] = False
     st.rerun()
 
@@ -815,15 +1033,25 @@ if st.session_state.get("content_repurpose_in_progress", False):
     all_bundles = st.session_state.get("content_repurpose_bundle", {})
     if not isinstance(all_bundles, dict):
         all_bundles = {}
-    transcript_text_for_repurpose = build_transcript_plain_text(transcript_payload)
     content_repurpose_bundle = {}
+    source_language, source_content_bundle = _get_alternate_language_bundle(all_bundles, selected_output_language)
     try:
-        content_repurpose_bundle = generate_content_repurpose_bundle_with_openai(
-            api_key=api_analysis_key,
-            model=DEFAULT_OPENAI_MODEL,
-            output_language=OUTPUT_LANGUAGE_MAP.get(selected_output_language, selected_output_language),
-            transcript_text=transcript_text_for_repurpose,
-        )
+        if source_content_bundle:
+            content_repurpose_bundle = translate_content_repurpose_bundle_with_openai(
+                api_key=api_analysis_key,
+                model=DEFAULT_OPENAI_MODEL,
+                source_bundle=source_content_bundle,
+                source_language=OUTPUT_LANGUAGE_MAP.get(source_language, source_language),
+                target_language=OUTPUT_LANGUAGE_MAP.get(selected_output_language, selected_output_language),
+            )
+        else:
+            transcript_text_for_repurpose = build_transcript_plain_text(transcript_payload)
+            content_repurpose_bundle = generate_content_repurpose_bundle_with_openai(
+                api_key=api_analysis_key,
+                model=DEFAULT_OPENAI_MODEL,
+                output_language=OUTPUT_LANGUAGE_MAP.get(selected_output_language, selected_output_language),
+                transcript_text=transcript_text_for_repurpose,
+            )
     except requests.HTTPError as exc:
         logger.exception("Content repurposing request failed")
         set_api_error_details("Content repurposing", build_http_error_debug_details(exc, "Content repurposing"))
@@ -854,6 +1082,8 @@ if st.session_state.get("content_repurpose_in_progress", False):
     st.session_state["content_repurpose_bundle"] = all_bundles
     st.session_state["content_repurpose_ran"] = bool(content_repurpose_md.strip())
     st.session_state["content_repurpose_history"] = []
+    if current_session_id and api_key and isinstance(all_bundles, dict) and all_bundles:
+        persist_cached_session_safely(api_key, current_session_id, content_repurpose_bundle=all_bundles)
     st.session_state["content_repurpose_in_progress"] = False
     st.rerun()
 
@@ -899,6 +1129,8 @@ if st.session_state.get("smart_recap_in_progress", False):
     st.session_state["smart_recap_ran"] = bool(
         any(isinstance(value, str) and value.strip() for value in smart_recap_bundle.values())
     )
+    if current_session_id and api_key and isinstance(smart_recap_bundle, dict) and smart_recap_bundle:
+        persist_cached_session_safely(api_key, current_session_id, smart_recap_bundle=smart_recap_bundle)
     st.session_state["smart_recap_in_progress"] = False
     st.session_state["smart_recap_in_progress_tone"] = ""
     st.rerun()

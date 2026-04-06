@@ -3,7 +3,7 @@ import streamlit as st
 from livestorm_app.charts.common import PLOTLY_AVAILABLE, apply_default_layout, px, render_chart_fallback
 
 
-def render_content_pace_and_activity_chart(cross_source):
+def render_content_pace_and_activity_chart(cross_source, chart_key: str | None = None):
     st.markdown("**Content Pace And Audience Activity**")
     combined_timeline_df = cross_source.get("combined_timeline_df")
     if combined_timeline_df is None or combined_timeline_df.empty:
@@ -53,6 +53,11 @@ def render_content_pace_and_activity_chart(cross_source):
             ),
             barmode="overlay",
         )
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "displaylogo": False})
+        st.plotly_chart(
+            fig,
+            use_container_width=True,
+            config={"displayModeBar": False, "displaylogo": False},
+            key=chart_key,
+        )
         return
     render_chart_fallback("Install `plotly` to view charts.", combined_timeline_df, ["bucket_start_pct", "transcript_wpm", "chat_messages", "question_count"])

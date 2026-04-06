@@ -703,25 +703,10 @@ def fetch_session_transcript(
 
 def fetch_chat_and_questions_bundle(key: str, session_id: str) -> Dict[str, Any]:
     payload = fetch_chat_messages(key, session_id)
-    messages = extract_messages(payload)
-
-    chat_df = pd.DataFrame()
-    if messages:
-        rows = [flatten_message(message) for message in messages]
-        chat_df = clean_table_headers(pd.DataFrame(rows))
-        chat_df = format_unix_datetime_columns(chat_df)
-        chat_df = drop_unwanted_columns(chat_df)
+    chat_df = build_chat_df_from_payload(payload)
 
     raw_questions_payload = fetch_session_questions(key, session_id)
-    raw_questions = extract_questions(raw_questions_payload)
-    if raw_questions:
-        people_lookup = extract_included_people(raw_questions_payload)
-        question_rows = [flatten_question(question, people_lookup) for question in raw_questions]
-        questions_df = clean_table_headers(pd.DataFrame(question_rows))
-        questions_df = format_unix_datetime_columns(questions_df)
-        questions_df = clean_questions_table(questions_df)
-    else:
-        questions_df = pd.DataFrame()
+    questions_df = build_questions_df_from_payload(raw_questions_payload)
 
     return {
         "chat_payload": payload,
@@ -729,6 +714,29 @@ def fetch_chat_and_questions_bundle(key: str, session_id: str) -> Dict[str, Any]
         "questions_payload": raw_questions_payload,
         "questions_df": questions_df,
     }
+
+
+def build_chat_df_from_payload(payload: Dict[str, Any]) -> pd.DataFrame:
+    messages = extract_messages(payload)
+    if not messages:
+        return pd.DataFrame()
+
+    rows = [flatten_message(message) for message in messages]
+    chat_df = clean_table_headers(pd.DataFrame(rows))
+    chat_df = format_unix_datetime_columns(chat_df)
+    return drop_unwanted_columns(chat_df)
+
+
+def build_questions_df_from_payload(raw_questions_payload: Dict[str, Any]) -> pd.DataFrame:
+    raw_questions = extract_questions(raw_questions_payload)
+    if not raw_questions:
+        return pd.DataFrame()
+
+    people_lookup = extract_included_people(raw_questions_payload)
+    question_rows = [flatten_question(question, people_lookup) for question in raw_questions]
+    questions_df = clean_table_headers(pd.DataFrame(question_rows))
+    questions_df = format_unix_datetime_columns(questions_df)
+    return clean_questions_table(questions_df)
 
 
 def load_analysis_prompt(path: Path) -> str:
@@ -802,6 +810,7 @@ def build_content_repurpose_bundle_prompt() -> str:
         "- blog\n"
         "- email\n"
         "- social_media\n\n"
+        "All four keys are mandatory. Never omit a key. If you are running out of space, make each section shorter, but still return all four keys.\n\n"
         "Each value must be markdown content in the requested output language.\n\n"
         "Requirements for `summary`:\n"
         "- 500-700 words.\n"
@@ -857,6 +866,165 @@ def parse_content_repurpose_bundle_response(response_text: str) -> Dict[str, str
     }
 
 
+def _bundle_has_all_sections(bundle: Dict[str, str]) -> bool:
+    required_keys = ["summary", "blog", "email", "social_media"]
+    return all(isinstance(bundle.get(key), str) and bundle.get(key, "").strip() for key in required_keys)
+
+
+def _bundle_language_looks_wrong(bundle: Dict[str, str], output_language: str) -> bool:
+    output_language = str(output_language or "").strip().lower()
+    if output_language != "french":
+        return False
+
+    sample_text = " ".join(
+        str(bundle.get(key) or "")
+        for key in ["summary", "blog", "email", "social_media"]
+    ).lower()
+    if not sample_text.strip():
+        return False
+
+    english_markers = [
+        " the ", " and ", " with ", " for ", " your ", " this ", " that ", " you ", " we ",
+        " follow-up ", " key takeaways ", " next steps ", " subject line ", " social media ",
+    ]
+    french_markers = [
+        " le ", " la ", " les ", " de ", " des ", " et ", " avec ", " pour ", " votre ", " vos ",
+        " ce ", " cette ", " vous ", " nous ", " suivi ", " prochaines etapes ", " points cles ",
+    ]
+
+    english_score = sum(sample_text.count(marker) for marker in english_markers)
+    french_score = sum(sample_text.count(marker) for marker in french_markers)
+    return english_score > max(french_score + 8, 12)
+
+
+def _extract_chat_completion_text(payload: Dict[str, Any]) -> str:
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return ""
+    message = choices[0].get("message", {})
+    content = message.get("content")
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        text_parts: List[str] = []
+        for item in content:
+            if isinstance(item, str) and item.strip():
+                text_parts.append(item.strip())
+                continue
+            if isinstance(item, dict):
+                value = item.get("text") or item.get("output_text")
+                if isinstance(value, str) and value.strip():
+                    text_parts.append(value.strip())
+        return "\n".join(text_parts).strip()
+    if isinstance(content, dict):
+        for key in ("text", "output_text", "content"):
+            value = content.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return ""
+
+
+def translate_markdown_with_openai(
+    api_key: str,
+    model: str,
+    source_markdown: str,
+    source_language: str,
+    target_language: str,
+    max_tokens: int = 6000,
+) -> str:
+    source_markdown = str(source_markdown or "").strip()
+    if not source_markdown:
+        return ""
+
+    messages: List[Dict[str, str]] = [
+        {
+            "role": "system",
+            "content": (
+                "You translate markdown reports between English and French. Preserve structure, headings, bullets, "
+                "tables, timestamps, score values, and factual meaning. Do not summarize, expand, or omit content."
+            ),
+        },
+        {"role": "system", "content": f"Translate from {source_language} to {target_language}. Return only translated markdown."},
+        {"role": "user", "content": source_markdown},
+    ]
+    resp = requests.post(
+        OPENAI_CHAT_COMPLETIONS_URL,
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json={
+            "model": model,
+            "temperature": 0.1,
+            "max_tokens": max_tokens,
+            "messages": messages,
+        },
+        timeout=120,
+    )
+    resp.raise_for_status()
+    return _extract_chat_completion_text(resp.json())
+
+
+def translate_content_repurpose_bundle_with_openai(
+    api_key: str,
+    model: str,
+    source_bundle: Dict[str, str],
+    source_language: str,
+    target_language: str,
+) -> Dict[str, str]:
+    normalized_bundle = {
+        key: str(value or "").strip()
+        for key, value in (source_bundle or {}).items()
+        if key in {"summary", "blog", "email", "social_media"}
+    }
+    if not any(normalized_bundle.values()):
+        return {"summary": "", "blog": "", "email": "", "social_media": ""}
+
+    messages: List[Dict[str, str]] = [
+        {
+            "role": "system",
+            "content": (
+                "You translate a structured content repurposing JSON bundle between English and French. Return valid JSON "
+                "with exactly these keys: summary, blog, email, social_media. Preserve structure, intent, formatting, calls to action, "
+                "and platform-appropriate tone. Translate the values only."
+            ),
+        },
+        {"role": "system", "content": f"Translate from {source_language} to {target_language}. Return only JSON."},
+        {"role": "user", "content": json.dumps(normalized_bundle, ensure_ascii=False)},
+    ]
+
+    bundle = {"summary": "", "blog": "", "email": "", "social_media": ""}
+    for attempt in range(3):
+        extra_messages: List[Dict[str, str]] = []
+        if attempt == 1:
+            extra_messages.append(
+                {
+                    "role": "system",
+                    "content": "The previous answer was incomplete. Return valid JSON with all four required keys populated: summary, blog, email, social_media.",
+                }
+            )
+        elif attempt == 2:
+            extra_messages.append(
+                {
+                    "role": "system",
+                    "content": f"The previous answer was not fully written in {target_language}. Rewrite all four sections entirely in {target_language}. Do not mix in the source language except unavoidable brand/platform names.",
+                }
+            )
+        resp = requests.post(
+            OPENAI_CHAT_COMPLETIONS_URL,
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={
+                "model": model,
+                "temperature": 0.1,
+                "max_tokens": 12000,
+                "messages": messages + extra_messages,
+            },
+            timeout=120,
+        )
+        resp.raise_for_status()
+        bundle = parse_content_repurpose_bundle_response(_extract_chat_completion_text(resp.json()))
+        if _bundle_has_all_sections(bundle) and not _bundle_language_looks_wrong(bundle, target_language):
+            return bundle
+    return bundle
+
+
 def generate_content_repurpose_bundle_with_openai(
     api_key: str,
     model: str,
@@ -877,44 +1045,45 @@ def generate_content_repurpose_bundle_with_openai(
         {"role": "system", "content": f"Respond only in {output_language}."},
         {"role": "user", "content": f"Transcript text:\n\n{transcript_text}"},
     ]
-    resp = requests.post(
-        OPENAI_CHAT_COMPLETIONS_URL,
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        json={
-            "model": model,
-            "temperature": 0.2,
-            "messages": messages,
-        },
-        timeout=120,
-    )
-    resp.raise_for_status()
-    payload = resp.json()
-    choices = payload.get("choices")
-    if not isinstance(choices, list) or not choices:
-        return {"summary": "", "blog": "", "email": "", "social_media": ""}
-    message = choices[0].get("message", {})
-    content = message.get("content")
-    content_text = ""
-    if isinstance(content, str):
-        content_text = content.strip()
-    elif isinstance(content, list):
-        text_parts: List[str] = []
-        for item in content:
-            if isinstance(item, str) and item.strip():
-                text_parts.append(item.strip())
-                continue
-            if isinstance(item, dict):
-                value = item.get("text") or item.get("output_text")
-                if isinstance(value, str) and value.strip():
-                    text_parts.append(value.strip())
-        content_text = "\n".join(text_parts).strip()
-    elif isinstance(content, dict):
-        for key in ("text", "output_text", "content"):
-            value = content.get(key)
-            if isinstance(value, str) and value.strip():
-                content_text = value.strip()
-                break
-    return parse_content_repurpose_bundle_response(content_text)
+    bundle = {"summary": "", "blog": "", "email": "", "social_media": ""}
+    for attempt in range(3):
+        extra_messages: List[Dict[str, str]] = []
+        if attempt == 1:
+            extra_messages.append(
+                {
+                    "role": "system",
+                    "content": "The previous answer was incomplete. Return valid JSON with all four required keys populated: summary, blog, email, social_media.",
+                }
+            )
+        elif attempt == 2:
+            extra_messages.append(
+                {
+                    "role": "system",
+                    "content": f"The previous answer was not fully written in {output_language}. Rewrite all four sections entirely in {output_language}. Do not mix in English except unavoidable brand/platform names.",
+                }
+            )
+        resp = requests.post(
+            OPENAI_CHAT_COMPLETIONS_URL,
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={
+                "model": model,
+                "temperature": 0.2,
+                "max_tokens": 12000,
+                "messages": messages + extra_messages,
+            },
+            timeout=120,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+        bundle = parse_content_repurpose_bundle_response(_extract_chat_completion_text(payload))
+        if _bundle_has_all_sections(bundle) and not _bundle_language_looks_wrong(bundle, output_language):
+            return bundle
+        if attempt == 0:
+            logger.warning("Content repurposing bundle response was incomplete; retrying once with stricter instructions.")
+        elif attempt == 1 and _bundle_language_looks_wrong(bundle, output_language):
+            logger.warning("Content repurposing bundle response language looked wrong; retrying with stricter language instructions.")
+
+    return bundle
 
 
 def build_smart_recap_prompt(tone: str) -> str:
@@ -2586,12 +2755,15 @@ def build_compact_transcript_payload_for_llm(transcript_payload: Dict[str, Any],
     transcript = _extract_transcript_object(transcript_payload)
     segments_df = build_transcript_segments_df(transcript_payload)
     transcript_text = build_transcript_plain_text(transcript_payload)
+    transcript_text_excerpt = transcript_text[:6000].strip()
 
     compact_payload: Dict[str, Any] = {
         "language": transcript.get("language"),
         "duration_seconds": transcript.get("duration_seconds"),
-        "text": transcript_text,
     }
+    if transcript_text_excerpt:
+        compact_payload["text_excerpt"] = transcript_text_excerpt
+        compact_payload["text_excerpt_truncated"] = len(transcript_text_excerpt) < len(transcript_text)
 
     if not segments_df.empty:
         compact_segments_df = segments_df.head(max_segments).copy()
@@ -2651,6 +2823,7 @@ def analyze_with_openai(
     raw_payload: Optional[Dict[str, Any]] = None,
     questions_payload: Optional[Dict[str, Any]] = None,
     transcript_payload: Optional[Dict[str, Any]] = None,
+    max_tokens: int = 2500,
 ) -> str:
     messages: List[Dict[str, str]] = [
         {"role": "system", "content": system_prompt},
@@ -2667,9 +2840,6 @@ def analyze_with_openai(
         user_payload["questions_api_response"] = questions_payload
     if transcript_payload is not None:
         user_payload["transcript_api_response"] = transcript_payload
-        transcript_text = transcript_payload.get("text")
-        if isinstance(transcript_text, str) and transcript_text.strip():
-            user_payload["transcript_text"] = transcript_text.strip()
         transcript_segments = transcript_payload.get("segments")
         if isinstance(transcript_segments, list) and transcript_segments:
             readable_segments: List[str] = []
@@ -2686,13 +2856,6 @@ def analyze_with_openai(
                 readable_segments.append(f"{prefix}: {text}" if prefix else text)
             if readable_segments:
                 user_payload["transcript_excerpt"] = readable_segments
-            if isinstance(transcript_text, str) and transcript_text.strip():
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": f"Transcript text:\n\n{transcript_text.strip()}",
-                    }
-                )
 
     messages.append({"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)})
 
@@ -2702,6 +2865,7 @@ def analyze_with_openai(
         json={
             "model": model,
             "temperature": 0.2,
+            "max_tokens": max_tokens,
             "messages": messages,
         },
         timeout=120,

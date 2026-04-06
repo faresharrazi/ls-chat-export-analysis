@@ -14,8 +14,10 @@ SESSION_DEFAULTS = {
     "chat_df": None,
     "analysis_md": "",
     "analysis_ran": False,
+    "analysis_bundle": {},
     "deep_analysis_md": "",
     "deep_analysis_ran": False,
+    "deep_analysis_bundle": {},
     "content_repurpose_md": "",
     "content_repurpose_bundle": {},
     "content_repurpose_ran": False,
@@ -74,9 +76,11 @@ def get_active_session_id(input_mode: str, session_id: str, selected_session_fro
 def clear_analysis_output() -> None:
     st.session_state["analysis_md"] = ""
     st.session_state["analysis_ran"] = False
+    st.session_state["analysis_bundle"] = {}
     st.session_state["analysis_in_progress"] = False
     st.session_state["deep_analysis_md"] = ""
     st.session_state["deep_analysis_ran"] = False
+    st.session_state["deep_analysis_bundle"] = {}
     st.session_state["deep_analysis_in_progress"] = False
     st.session_state["content_repurpose_md"] = ""
     st.session_state["content_repurpose_bundle"] = {}

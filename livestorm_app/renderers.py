@@ -52,6 +52,15 @@ def _render_chart_picker(title: str, chart_specs: List[ChartSpec], default_keys:
     return [options[label] for label in selected_labels if label in options]
 
 
+def _keep_analysis_panel_open() -> None:
+    st.session_state["analysis_expander_open"] = True
+
+
+def _activate_analysis_language(language: str) -> None:
+    st.session_state["analysis_language"] = language
+    _keep_analysis_panel_open()
+
+
 def _render_chart_grid(selected_specs: List[ChartSpec], renderer_args: Tuple[Any, ...], columns: int = 2) -> None:
     if not selected_specs:
         st.info("Choose at least one chart to display.")
@@ -216,6 +225,162 @@ def _normalize_markdown_for_display(markdown_text: str) -> str:
         cleaned.append(line)
         previous_blank = is_blank
     return "\n".join(cleaned).strip()
+
+
+DEEP_ANALYSIS_SECTION_ORDER: List[Tuple[str, str]] = [
+    ("executive_summary", "Executive Summary"),
+    ("session_scores", "Session Scores"),
+    ("key_moments", "Key Moments"),
+    ("engagement_timeline", "Engagement Timeline"),
+    ("technical_session_diagnostics", "Technical Diagnostics"),
+    ("speaker_and_interaction_analysis", "Speaker Dynamics"),
+    ("cognitive_load_analysis", "Cognitive Load"),
+    ("audience_intent_analysis", "Audience Intent"),
+    ("cross_source_synthesis", "Cross-Source Synthesis"),
+    ("friction_and_risk_signals", "Friction And Risks"),
+    ("business_signals_and_kpi_mentions", "Business Signals"),
+    ("replay_optimization", "Replay Optimization"),
+    ("actionable_recommendations", "Recommendations"),
+    ("risks_ambiguities_and_data_quality_limits", "Limits And Uncertainty"),
+]
+
+UI_LABELS: Dict[str, Dict[str, str]] = {
+    "English": {
+        "overall_analysis": "Overall Analysis",
+        "deeper_analysis": "Deeper Analysis",
+        "summary": "Summary",
+        "blog": "Blog Post",
+        "email": "Email Follow-up",
+        "social_media": "Social Media Posts",
+        "overview": "Overview",
+        "executive_summary": "Executive Summary",
+        "session_scores": "Session Scores",
+        "key_moments": "Key Moments",
+        "engagement_timeline": "Engagement Timeline",
+        "technical_session_diagnostics": "Technical Diagnostics",
+        "speaker_and_interaction_analysis": "Speaker Dynamics",
+        "cognitive_load_analysis": "Cognitive Load",
+        "audience_intent_analysis": "Audience Intent",
+        "cross_source_synthesis": "Cross-Source Synthesis",
+        "friction_and_risk_signals": "Friction And Risks",
+        "business_signals_and_kpi_mentions": "Business Signals",
+        "replay_optimization": "Replay Optimization",
+        "actionable_recommendations": "Recommendations",
+        "risks_ambiguities_and_data_quality_limits": "Limits And Uncertainty",
+    },
+    "French": {
+        "overall_analysis": "Analyse Globale",
+        "deeper_analysis": "Analyse Approfondie",
+        "summary": "Resume",
+        "blog": "Article De Blog",
+        "email": "Email De Suivi",
+        "social_media": "Posts Reseaux Sociaux",
+        "overview": "Vue D'Ensemble",
+        "executive_summary": "Resume Executif",
+        "session_scores": "Scores De Session",
+        "key_moments": "Moments Cles",
+        "engagement_timeline": "Chronologie De L'Engagement",
+        "technical_session_diagnostics": "Diagnostic Technique",
+        "speaker_and_interaction_analysis": "Dynamique Des Intervenants",
+        "cognitive_load_analysis": "Charge Cognitive",
+        "audience_intent_analysis": "Intentions De L'Audience",
+        "cross_source_synthesis": "Synthese Croisee",
+        "friction_and_risk_signals": "Friction Et Risques",
+        "business_signals_and_kpi_mentions": "Signaux Business",
+        "replay_optimization": "Optimisation Du Replay",
+        "actionable_recommendations": "Recommandations",
+        "risks_ambiguities_and_data_quality_limits": "Limites Et Incertitudes",
+    },
+}
+
+
+def _ui_label(key: str, language: str = "English", fallback: str = "") -> str:
+    localized = UI_LABELS.get(str(language), {})
+    if key in localized:
+        return localized[key]
+    english = UI_LABELS.get("English", {})
+    if key in english:
+        return english[key]
+    return fallback or key
+
+
+def _normalize_section_key(value: str) -> str:
+    normalized = re.sub(r"^\s*#+\s*", "", str(value or "").strip())
+    normalized = re.sub(r"^\s*\d+[.)]\s*", "", normalized)
+    normalized = normalized.strip().strip(":")
+    normalized = re.sub(r"[^a-z0-9]+", "_", normalized.lower())
+    return normalized.strip("_")
+
+
+def _parse_deep_analysis_sections(markdown_text: str, language: str = "English") -> List[Tuple[str, str, str]]:
+    if not isinstance(markdown_text, str) or not markdown_text.strip():
+        return []
+
+    canonical_labels = {key: _ui_label(key, language, label) for key, label in DEEP_ANALYSIS_SECTION_ORDER}
+    alias_map = {
+        "technical_diagnostics": "technical_session_diagnostics",
+        "technical_session_diagnostic": "technical_session_diagnostics",
+        "speaker_interaction_analysis": "speaker_and_interaction_analysis",
+        "speaker_and_interaction": "speaker_and_interaction_analysis",
+        "speaker_dynamics": "speaker_and_interaction_analysis",
+        "friction_and_risks": "friction_and_risk_signals",
+        "friction_risk_signals": "friction_and_risk_signals",
+        "business_signals": "business_signals_and_kpi_mentions",
+        "data_quality_limits": "risks_ambiguities_and_data_quality_limits",
+        "risks_ambiguities_and_limits": "risks_ambiguities_and_data_quality_limits",
+    }
+
+    sections: List[Tuple[str, str, str]] = []
+    current_key = "overview"
+    current_label = _ui_label("overview", language, "Overview")
+    current_lines: List[str] = []
+
+    def flush_current() -> None:
+        content = "\n".join(current_lines).strip()
+        if content:
+            sections.append((current_key, current_label, content))
+
+    for raw_line in markdown_text.replace("\r\n", "\n").splitlines():
+        line = raw_line.rstrip()
+        stripped = line.strip()
+        heading_match = re.match(r"^(?:#{1,6}\s+|\d+[.)]\s+)(.+?)\s*$", stripped)
+        if heading_match:
+            flush_current()
+            heading_text = heading_match.group(1).strip()
+            normalized_key = _normalize_section_key(heading_text)
+            normalized_key = alias_map.get(normalized_key, normalized_key)
+            current_key = normalized_key or "section"
+            current_label = canonical_labels.get(current_key, heading_text)
+            current_lines = []
+            continue
+        current_lines.append(line)
+    flush_current()
+
+    if not sections:
+        return [("overview", _ui_label("overview", language, "Overview"), markdown_text.strip())]
+
+    ordered: List[Tuple[str, str, str]] = []
+    remaining = list(sections)
+    for section_key, label in DEEP_ANALYSIS_SECTION_ORDER:
+        for index, (key, _, content) in enumerate(remaining):
+            if key == section_key:
+                ordered.append((key, label, content))
+                remaining.pop(index)
+                break
+    ordered.extend(remaining)
+    return ordered
+
+
+def _render_deep_analysis_sections(markdown_text: str, current_session_id: str, language: str = "English") -> None:
+    sections = _parse_deep_analysis_sections(markdown_text, language=language)
+    if not sections:
+        st.markdown(markdown_text)
+        return
+
+    section_tabs = st.tabs([label for _, label, _ in sections])
+    for tab, (_, _, content) in zip(section_tabs, sections):
+        with tab:
+            st.markdown(content)
 
 
 def render_transcript_block(
@@ -645,149 +810,188 @@ def render_analysis_block(
     chat_df: Optional[pd.DataFrame] = None,
     questions_df: Optional[pd.DataFrame] = None,
 ) -> Tuple[bool, bool]:
-    with st.expander("Analysis", expanded=analysis_ran or deep_analysis_ran):
+    analysis_expander_open = bool(
+        st.session_state.get("analysis_expander_open", analysis_ran or deep_analysis_ran)
+    )
+    with st.expander("Analysis", expanded=analysis_expander_open):
         chat_questions_available = chat_available and questions_available
         analysis_available = bool(transcript_available or chat_questions_available)
         deep_analysis_available = bool(transcript_available and chat_available and questions_available)
+        analysis_bundle = st.session_state.get("analysis_bundle", {})
+        deep_analysis_bundle = st.session_state.get("deep_analysis_bundle", {})
+        analyze_button = False
+        deep_analysis_button = False
+        available_languages = [
+            language
+            for language in OUTPUT_LANGUAGE_LABELS.keys()
+            if str(analysis_bundle.get(language) or "").strip() or str(deep_analysis_bundle.get(language) or "").strip()
+        ]
+        all_languages_available = len(available_languages) == len(OUTPUT_LANGUAGE_LABELS)
+        tab_languages = available_languages if all_languages_available and available_languages else list(OUTPUT_LANGUAGE_LABELS.keys())
+        language_tabs = st.tabs([OUTPUT_LANGUAGE_LABELS.get(language, language) for language in tab_languages])
 
-        with st.columns([1.2, 1.8])[0]:
-            st.radio(
-                "Output Language",
-                options=list(OUTPUT_LANGUAGE_LABELS.keys()),
-                format_func=lambda choice: OUTPUT_LANGUAGE_LABELS.get(choice, choice),
-                horizontal=True,
-                key="analysis_language",
-            )
+        for language_tab, language in zip(language_tabs, tab_languages):
+            with language_tab:
+                language_analysis_md = str(analysis_bundle.get(language) or "")
+                language_deep_analysis_md = str(deep_analysis_bundle.get(language) or "")
 
-        overall_tab, deeper_tab = st.tabs(["Overall Analysis", "Deeper Analysis"])
-
-        with overall_tab:
-            if transcript_available and chat_questions_available:
-                st.caption("Uses the transcript, chat messages, and submitted questions to generate the overall analysis.")
-            elif transcript_available:
-                st.caption("Uses the transcript to generate the overall analysis.")
-            elif chat_questions_available:
-                st.caption("Uses chat messages and submitted questions to generate the overall analysis.")
-            else:
-                st.caption("No analysis inputs are available yet.")
-            should_render_cross_source = bool(
-                transcript_available
-                and chat_questions_available
-                and isinstance(transcript_payload, dict)
-            )
-
-            if st.session_state.get("analysis_in_progress", False):
-                st.button("Running Analysis...", key="analysis_running_btn", type="primary", disabled=True)
-                analyze_button = False
-            else:
-                analyze_button = st.button(
-                    "Run analysis",
-                    key="analysis_run_btn",
-                    type="primary",
-                    disabled=not analysis_available,
+                overall_tab, deeper_tab = st.tabs(
+                    [
+                        _ui_label("overall_analysis", language, "Overall Analysis"),
+                        _ui_label("deeper_analysis", language, "Deeper Analysis"),
+                    ]
                 )
 
-            if should_render_cross_source and analysis_ran:
-                transcript_insights = build_transcript_insights(transcript_payload)
-                if not transcript_insights.get("segments_df", pd.DataFrame()).empty:
-                    cross_source = build_cross_source_insights(chat_df, questions_df, transcript_payload)
-                    if CROSS_CHARTS:
-                        CROSS_CHARTS[0].renderer(cross_source)
-                    reaction_moments_df = cross_source.get("reaction_moments_df", pd.DataFrame())
-                    if not reaction_moments_df.empty:
-                        st.markdown("**Segments With The Most Reactions**")
-                        st.dataframe(
-                            reaction_moments_df[["session_stage", "start_label", "excerpt", "chat_messages", "question_count"]],
-                            use_container_width=True,
-                            hide_index=True,
-                        )
-                else:
-                    st.caption("Cross-source preview requires transcript segments with timing data.")
-
-            if analysis_ran and analysis_md:
-                st.markdown("**Analysis**")
-                st.markdown(analysis_md)
-                analysis_bytes = analysis_md.encode("utf-8")
-                analysis_ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
-                with st.columns([1.1, 2.9])[0]:
-                    download_format = st.selectbox(
-                        "Download As",
-                        options=["PDF", "Markdown"],
-                        index=0,
-                        key=f"analysis_download_format_{current_session_id}",
-                    )
-                    if download_format == "Markdown":
-                        st.download_button(
-                            label="Download Analysis",
-                            data=analysis_bytes,
-                            file_name=f"livestorm-analysis-{current_session_id}-{analysis_ts}.md",
-                            mime="text/markdown",
-                            use_container_width=True,
-                        )
+                with overall_tab:
+                    if transcript_available and chat_questions_available:
+                        st.caption("Uses the transcript, chat messages, and submitted questions to generate the overall analysis.")
+                    elif transcript_available:
+                        st.caption("Uses the transcript to generate the overall analysis.")
+                    elif chat_questions_available:
+                        st.caption("Uses chat messages and submitted questions to generate the overall analysis.")
                     else:
-                        try:
-                            pdf_bytes = analysis_markdown_to_pdf_bytes(analysis_md, title="Livestorm Session Analysis")
-                            st.download_button(
-                                label="Download Analysis",
-                                data=pdf_bytes,
-                                file_name=f"livestorm-analysis-{current_session_id}-{analysis_ts}.pdf",
-                                mime="application/pdf",
-                                use_container_width=True,
-                            )
-                        except RuntimeError as exc:
-                            st.caption(str(exc))
-            elif analysis_ran:
-                st.info("Analysis finished, but no markdown output was returned.")
-
-        with deeper_tab:
-            st.caption("Uses the full detailed transcript JSON, chat, and questions to generate a deeper analysis.")
-            if st.session_state.get("deep_analysis_in_progress", False):
-                st.button("Running Deeper Analysis...", key="deep_analysis_running_btn", type="primary", disabled=True)
-                deep_analysis_button = False
-            else:
-                deep_analysis_button = st.button(
-                    "Deeper Analysis",
-                    key="deep_analysis_run_btn",
-                    type="primary",
-                    disabled=not deep_analysis_available,
-                )
-
-            if not deep_analysis_available:
-                st.caption("Fetch Data to enable deep analysis.")
-
-            if deep_analysis_ran and deep_analysis_md:
-                st.markdown(deep_analysis_md)
-                deep_analysis_bytes = deep_analysis_md.encode("utf-8")
-                deep_analysis_ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
-                with st.columns([1.1, 2.9])[0]:
-                    download_format = st.selectbox(
-                        "Download As",
-                        options=["PDF", "Markdown"],
-                        index=0,
-                        key=f"deep_analysis_download_format_{current_session_id}",
-                    )
-                    if download_format == "Markdown":
-                        st.download_button(
-                            label="Download Deep Analysis",
-                            data=deep_analysis_bytes,
-                            file_name=f"livestorm-deep-analysis-{current_session_id}-{deep_analysis_ts}.md",
-                            mime="text/markdown",
-                            use_container_width=True,
+                        st.caption("No analysis inputs are available yet.")
+                    has_analysis_for_language = bool(language_analysis_md.strip())
+                    if has_analysis_for_language:
+                        current_analyze_button = False
+                    elif st.session_state.get("analysis_in_progress", False) and st.session_state.get("analysis_language") == language:
+                        st.button(
+                            "Running Analysis...",
+                            key=f"analysis_running_btn_{language}",
+                            type="primary",
+                            disabled=True,
                         )
+                        current_analyze_button = False
                     else:
-                        try:
-                            pdf_bytes = analysis_markdown_to_pdf_bytes(deep_analysis_md, title="Livestorm Deep Analysis")
-                            st.download_button(
-                                label="Download Deep Analysis",
-                                data=pdf_bytes,
-                                file_name=f"livestorm-deep-analysis-{current_session_id}-{deep_analysis_ts}.pdf",
-                                mime="application/pdf",
-                                use_container_width=True,
+                        current_analyze_button = st.button(
+                            "Run analysis",
+                            key=f"analysis_run_btn_{language}",
+                            type="primary",
+                            disabled=not analysis_available,
+                            on_click=_activate_analysis_language,
+                            args=(language,),
+                        )
+                    analyze_button = analyze_button or current_analyze_button
+
+                    if has_analysis_for_language:
+                        st.markdown(language_analysis_md)
+                        analysis_bytes = language_analysis_md.encode("utf-8")
+                        analysis_ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+                        with st.columns([1.1, 2.9])[0]:
+                            download_format = st.selectbox(
+                                "Download As",
+                                options=["PDF", "Markdown"],
+                                index=0,
+                                key=f"analysis_download_format_{current_session_id}_{language}",
                             )
-                        except RuntimeError as exc:
-                            st.caption(str(exc))
-            elif deep_analysis_ran:
-                st.info("Deep analysis finished, but no markdown output was returned.")
+                            if download_format == "Markdown":
+                                st.download_button(
+                                    label="Download Analysis",
+                                    data=analysis_bytes,
+                                    file_name=f"livestorm-analysis-{language.lower()}-{current_session_id}-{analysis_ts}.md",
+                                    mime="text/markdown",
+                                    use_container_width=True,
+                                )
+                            else:
+                                try:
+                                    pdf_bytes = analysis_markdown_to_pdf_bytes(language_analysis_md, title="Livestorm Session Analysis")
+                                    st.download_button(
+                                        label="Download Analysis",
+                                        data=pdf_bytes,
+                                        file_name=f"livestorm-analysis-{language.lower()}-{current_session_id}-{analysis_ts}.pdf",
+                                        mime="application/pdf",
+                                        use_container_width=True,
+                                    )
+                                except RuntimeError as exc:
+                                    st.caption(str(exc))
+                    elif analysis_ran and st.session_state.get("analysis_language") == language:
+                        st.info("Analysis finished, but no markdown output was returned.")
+
+                with deeper_tab:
+                    st.caption("Uses the full detailed transcript JSON, chat, and questions to generate a deeper analysis.")
+                    should_render_cross_source = bool(
+                        transcript_available
+                        and chat_questions_available
+                        and isinstance(transcript_payload, dict)
+                    )
+                    has_deep_analysis_for_language = bool(language_deep_analysis_md.strip())
+                    if has_deep_analysis_for_language:
+                        current_deep_analysis_button = False
+                    elif st.session_state.get("deep_analysis_in_progress", False) and st.session_state.get("analysis_language") == language:
+                        st.button(
+                            "Running Deeper Analysis...",
+                            key=f"deep_analysis_running_btn_{language}",
+                            type="primary",
+                            disabled=True,
+                        )
+                        current_deep_analysis_button = False
+                    else:
+                        current_deep_analysis_button = st.button(
+                            "Deeper Analysis",
+                            key=f"deep_analysis_run_btn_{language}",
+                            type="primary",
+                            disabled=not deep_analysis_available,
+                            on_click=_activate_analysis_language,
+                            args=(language,),
+                        )
+                    deep_analysis_button = deep_analysis_button or current_deep_analysis_button
+
+                    if not deep_analysis_available:
+                        st.caption("Fetch Data to enable deep analysis.")
+
+                    if should_render_cross_source and has_deep_analysis_for_language:
+                        transcript_insights = build_transcript_insights(transcript_payload)
+                        if not transcript_insights.get("segments_df", pd.DataFrame()).empty:
+                            cross_source = build_cross_source_insights(chat_df, questions_df, transcript_payload)
+                            if CROSS_CHARTS:
+                                CROSS_CHARTS[0].renderer(
+                                    cross_source,
+                                    chart_key=f"cross_chart_{current_session_id}_{language}",
+                                )
+                            reaction_moments_df = cross_source.get("reaction_moments_df", pd.DataFrame())
+                            if not reaction_moments_df.empty:
+                                st.markdown("**Segments With The Most Reactions**")
+                                st.dataframe(
+                                    reaction_moments_df[["session_stage", "start_label", "excerpt", "chat_messages", "question_count"]],
+                                    use_container_width=True,
+                                    hide_index=True,
+                                )
+                        else:
+                            st.caption("Cross-source preview requires transcript segments with timing data.")
+
+                    if has_deep_analysis_for_language:
+                        _render_deep_analysis_sections(language_deep_analysis_md, current_session_id, language=language)
+                        deep_analysis_bytes = language_deep_analysis_md.encode("utf-8")
+                        deep_analysis_ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+                        with st.columns([1.1, 2.9])[0]:
+                            download_format = st.selectbox(
+                                "Download As",
+                                options=["PDF", "Markdown"],
+                                index=0,
+                                key=f"deep_analysis_download_format_{current_session_id}_{language}",
+                            )
+                            if download_format == "Markdown":
+                                st.download_button(
+                                    label="Download Deep Analysis",
+                                    data=deep_analysis_bytes,
+                                    file_name=f"livestorm-deep-analysis-{language.lower()}-{current_session_id}-{deep_analysis_ts}.md",
+                                    mime="text/markdown",
+                                    use_container_width=True,
+                                )
+                            else:
+                                try:
+                                    pdf_bytes = analysis_markdown_to_pdf_bytes(language_deep_analysis_md, title="Livestorm Deep Analysis")
+                                    st.download_button(
+                                        label="Download Deep Analysis",
+                                        data=pdf_bytes,
+                                        file_name=f"livestorm-deep-analysis-{language.lower()}-{current_session_id}-{deep_analysis_ts}.pdf",
+                                        mime="application/pdf",
+                                        use_container_width=True,
+                                    )
+                                except RuntimeError as exc:
+                                    st.caption(str(exc))
+                    elif deep_analysis_ran and st.session_state.get("analysis_language") == language:
+                        st.info("Deep analysis finished, but no markdown output was returned.")
 
         return analyze_button, deep_analysis_button
 
@@ -801,19 +1005,30 @@ def render_content_repurpose_block(
     content_repurpose_ran: bool,
 ) -> bool:
     with st.expander("Content Repurposing", expanded=content_repurpose_ran):
-        st.radio(
-            "Output Language",
-            options=list(OUTPUT_LANGUAGE_LABELS.keys()),
-            format_func=lambda choice: OUTPUT_LANGUAGE_LABELS.get(choice, choice),
-            horizontal=True,
-            key="content_repurpose_language",
+        all_languages_generated = bool(
+            isinstance(content_repurpose_bundle, dict)
+            and all(
+                isinstance(content_repurpose_bundle.get(language), dict)
+                and any(str(value or "").strip() for value in content_repurpose_bundle.get(language, {}).values())
+                for language in OUTPUT_LANGUAGE_LABELS.keys()
+            )
         )
+        if not all_languages_generated:
+            st.radio(
+                "Output Language",
+                options=list(OUTPUT_LANGUAGE_LABELS.keys()),
+                format_func=lambda choice: OUTPUT_LANGUAGE_LABELS.get(choice, choice),
+                horizontal=True,
+                key="content_repurpose_language",
+            )
         selected_language = st.session_state.get("content_repurpose_language", "English")
         language_bundle = content_repurpose_bundle.get(selected_language, {}) if isinstance(content_repurpose_bundle, dict) else {}
         language_already_generated = bool(isinstance(language_bundle, dict) and any(str(value or "").strip() for value in language_bundle.values()))
 
         repurpose_available = bool(transcript_available)
-        if st.session_state.get("content_repurpose_in_progress", False):
+        if language_already_generated:
+            generate_button = False
+        elif st.session_state.get("content_repurpose_in_progress", False):
             st.button(
                 "Generating Content...",
                 key="content_repurpose_running_btn",
@@ -835,10 +1050,10 @@ def render_content_repurpose_block(
             st.caption(f"Content has already been generated for {selected_language}. Switch language to generate the other version.")
 
         content_items = [
-            ("summary", "Summary"),
-            ("blog", "Blog Post"),
-            ("email", "Email Follow-up"),
-            ("social_media", "Social Media Posts"),
+            ("summary", "summary"),
+            ("blog", "blog"),
+            ("email", "email"),
+            ("social_media", "social_media"),
         ]
         available_languages = []
         if isinstance(content_repurpose_bundle, dict):
@@ -852,7 +1067,10 @@ def render_content_repurpose_block(
             for language_tab, language in zip(language_tabs, available_languages):
                 with language_tab:
                     bundle = content_repurpose_bundle.get(language, {})
-                    available_items = [(key, label, str(bundle.get(key) or "").strip()) for key, label in content_items]
+                    available_items = [
+                        (key, _ui_label(label_key, language), str(bundle.get(key) or "").strip())
+                        for key, label_key in content_items
+                    ]
                     available_items = [(key, label, markdown) for key, label, markdown in available_items if markdown]
                     if not available_items:
                         st.caption("No generated content is available for this language.")
@@ -902,7 +1120,7 @@ def render_smart_recap_block(
         recap_items = [
             ("professional", "Professional", SMART_RECAP_PROFESSIONAL_ICON_PATH),
             ("hype", "Hype", SMART_RECAP_HYPE_ICON_PATH),
-            ("surprise", "Surprise", SMART_RECAP_SURPRISE_ICON_PATH),
+            ("surprise", "Suprise Me!", SMART_RECAP_SURPRISE_ICON_PATH),
         ]
         if SMART_RECAP_SURPRISE_ICON_PATH.exists():
             surprise_icon_b64 = base64.b64encode(SMART_RECAP_SURPRISE_ICON_PATH.read_bytes()).decode("ascii")
@@ -950,7 +1168,7 @@ def render_smart_recap_block(
                     with button_col:
                         if is_generating_this_tone:
                             st.button(
-                                "Generating",
+                                f"Generating {label} Recap",
                                 key=f"smart_recap_running_btn_{key}",
                                 type="primary",
                                 disabled=True,
@@ -965,7 +1183,7 @@ def render_smart_recap_block(
                             if clicked:
                                 requested_tone = key
                     if is_generating_this_tone:
-                        st.caption(f"Generating {label}...")
+                        st.caption(f"Generating {label} Recap...")
 
                 if markdown:
                     title, description = _extract_title_and_description(markdown)
