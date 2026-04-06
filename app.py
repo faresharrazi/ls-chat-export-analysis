@@ -189,6 +189,17 @@ def _get_alternate_language_bundle(bundle_by_language: Any, target_language: str
     return "", {}
 
 
+def _normalize_smart_recap_bundle(raw_bundle: Any) -> Dict[str, str]:
+    if not isinstance(raw_bundle, dict):
+        return {}
+    allowed_tones = {"professional", "hype", "surprise"}
+    return {
+        str(tone): str(markdown).strip()
+        for tone, markdown in raw_bundle.items()
+        if str(tone) in allowed_tones and isinstance(markdown, str) and str(markdown).strip()
+    }
+
+
 def load_cached_session_into_state(api_key: str, session_id: str, cached_session: Dict[str, Any]) -> None:
     if not isinstance(cached_session, dict):
         return
@@ -203,7 +214,7 @@ def load_cached_session_into_state(api_key: str, session_id: str, cached_session
     analysis_bundle = _normalize_text_bundle(cached_session.get("analysis_bundle"), str(cached_session.get("analysis_md") or ""))
     deep_analysis_bundle = _normalize_text_bundle(cached_session.get("deep_analysis_bundle"), str(cached_session.get("deep_analysis_md") or ""))
     content_repurpose_bundle = cached_session.get("content_repurpose_bundle")
-    smart_recap_bundle = cached_session.get("smart_recap_bundle")
+    smart_recap_bundle = _normalize_smart_recap_bundle(cached_session.get("smart_recap_bundle"))
     selected_analysis_language = str(st.session_state.get("analysis_language", "English"))
 
     if isinstance(chat_payload, dict):
@@ -237,7 +248,7 @@ def load_cached_session_into_state(api_key: str, session_id: str, cached_session
         st.session_state["content_repurpose_md"] = build_content_repurpose_md(content_repurpose_bundle)
         st.session_state["content_repurpose_ran"] = bool(st.session_state["content_repurpose_md"].strip())
 
-    if isinstance(smart_recap_bundle, dict):
+    if smart_recap_bundle:
         st.session_state["smart_recap_bundle"] = smart_recap_bundle
         st.session_state["smart_recap_ran"] = bool(
             any(isinstance(value, str) and value.strip() for value in smart_recap_bundle.values())
@@ -314,13 +325,11 @@ def apply_smart_recap_job_result(job_result: Dict[str, Any]) -> None:
         clear_background_notice()
         return
 
-    smart_recap_bundle = st.session_state.get("smart_recap_bundle", {})
-    if not isinstance(smart_recap_bundle, dict):
-        smart_recap_bundle = {}
+    smart_recap_bundle = _normalize_smart_recap_bundle(st.session_state.get("smart_recap_bundle", {}))
 
     tone = str(job_result.get("tone") or "").strip().lower()
     markdown = str(job_result.get("markdown") or "").strip()
-    if tone and markdown:
+    if tone in {"professional", "hype", "surprise"} and markdown:
         smart_recap_bundle[tone] = markdown
 
     st.session_state["smart_recap_bundle"] = smart_recap_bundle

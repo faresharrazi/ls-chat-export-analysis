@@ -1164,72 +1164,75 @@ def render_smart_recap_block(
 
         for tab, (key, label, icon_path) in zip(recap_tabs, recap_items):
             with tab:
-                markdown = str(smart_recap_bundle.get(key) or "").strip()
-                is_generating_this_tone = bool(
-                    st.session_state.get("smart_recap_in_progress", False)
-                    and tone_in_progress == key
-                )
-                if not markdown:
-                    button_col, _ = st.columns([0.26, 0.74])
-                    with button_col:
-                        if is_generating_this_tone:
-                            st.button(
-                                f"Generating {label} Recap",
-                                key=f"smart_recap_running_btn_{key}",
-                                type="primary",
-                                disabled=True,
-                            )
-                        else:
-                            clicked = st.button(
-                                "Generate",
-                                key=f"smart_recap_run_btn_{key}",
-                                type="primary",
-                                disabled=not transcript_available or bool(st.session_state.get("smart_recap_in_progress", False)),
-                            )
-                            if clicked:
-                                requested_tone = key
-                    if is_generating_this_tone:
-                        st.caption(f"Generating {label} Recap...")
-
-                if markdown:
-                    title, description = _extract_title_and_description(markdown)
-                    plain_description = _normalize_markdown_for_display(description)
-                    plain_body = plain_description or _normalize_markdown_for_display(markdown)
-                    pdf_title = title.strip() if title.strip() else "Smart Recap"
-                    md_filename = f"livestorm-smart-recap-{label.lower()}-{current_session_id}.md"
-                    pdf_filename = f"livestorm-smart-recap-{label.lower()}-{current_session_id}.pdf"
-                    pdf_state_key = f"smart_recap_pdf_bytes_{current_session_id}_{key}"
-                    pdf_button_key = f"smart_recap_prepare_pdf_{current_session_id}_{key}"
-
-                    download_links: List[Tuple[str, bytes, str, str]] = [
-                        ("(MD)", markdown.encode("utf-8"), md_filename, "text/markdown")
-                    ]
-                    if title:
-                        _render_inline_download_links(title, download_links)
-                    else:
-                        _render_inline_download_links(label, download_links)
-
-                    prepare_pdf = st.button(
-                        "Prepare PDF",
-                        key=pdf_button_key,
-                        type="secondary",
+                try:
+                    markdown = str(smart_recap_bundle.get(key) or "").strip()
+                    is_generating_this_tone = bool(
+                        st.session_state.get("smart_recap_in_progress", False)
+                        and tone_in_progress == key
                     )
-                    if prepare_pdf and pdf_state_key not in st.session_state:
-                        pdf_source = plain_body if plain_body else _normalize_markdown_for_display(markdown)
-                        try:
-                            st.session_state[pdf_state_key] = analysis_markdown_to_pdf_bytes(pdf_source, title=pdf_title)
-                        except RuntimeError:
-                            st.info("PDF export is unavailable until `reportlab` is installed.")
+                    if not markdown:
+                        button_col, _ = st.columns([0.26, 0.74])
+                        with button_col:
+                            if is_generating_this_tone:
+                                st.button(
+                                    f"Generating {label} Recap",
+                                    key=f"smart_recap_running_btn_{key}",
+                                    type="primary",
+                                    disabled=True,
+                                )
+                            else:
+                                clicked = st.button(
+                                    "Generate",
+                                    key=f"smart_recap_run_btn_{key}",
+                                    type="primary",
+                                    disabled=not transcript_available or bool(st.session_state.get("smart_recap_in_progress", False)),
+                                )
+                                if clicked:
+                                    requested_tone = key
+                        if is_generating_this_tone:
+                            st.caption(f"Generating {label} Recap...")
 
-                    pdf_bytes = st.session_state.get(pdf_state_key)
-                    if isinstance(pdf_bytes, bytes) and pdf_bytes:
-                        st.download_button(
-                            "Download PDF",
-                            data=pdf_bytes,
-                            file_name=pdf_filename,
-                            mime="application/pdf",
-                            key=f"smart_recap_download_pdf_{current_session_id}_{key}",
+                    if markdown:
+                        title, description = _extract_title_and_description(markdown)
+                        plain_description = _normalize_markdown_for_display(description)
+                        plain_body = plain_description or _normalize_markdown_for_display(markdown)
+                        pdf_title = title.strip() if title.strip() else "Smart Recap"
+                        md_filename = f"livestorm-smart-recap-{label.lower()}-{current_session_id}.md"
+                        pdf_filename = f"livestorm-smart-recap-{label.lower()}-{current_session_id}.pdf"
+                        pdf_state_key = f"smart_recap_pdf_bytes_{current_session_id}_{key}"
+                        pdf_button_key = f"smart_recap_prepare_pdf_{current_session_id}_{key}"
+
+                        download_links: List[Tuple[str, bytes, str, str]] = [
+                            ("(MD)", markdown.encode("utf-8"), md_filename, "text/markdown")
+                        ]
+                        if title:
+                            _render_inline_download_links(title, download_links)
+                        else:
+                            _render_inline_download_links(label, download_links)
+
+                        prepare_pdf = st.button(
+                            "Prepare PDF",
+                            key=pdf_button_key,
+                            type="secondary",
                         )
-                    _render_readonly_text_block("", re.sub(r"^\s*Description\s*:?\s*", "", plain_body, flags=re.IGNORECASE))
+                        if prepare_pdf and pdf_state_key not in st.session_state:
+                            pdf_source = plain_body if plain_body else _normalize_markdown_for_display(markdown)
+                            try:
+                                st.session_state[pdf_state_key] = analysis_markdown_to_pdf_bytes(pdf_source, title=pdf_title)
+                            except RuntimeError:
+                                st.info("PDF export is unavailable until `reportlab` is installed.")
+
+                        pdf_bytes = st.session_state.get(pdf_state_key)
+                        if isinstance(pdf_bytes, bytes) and pdf_bytes:
+                            st.download_button(
+                                "Download PDF",
+                                data=pdf_bytes,
+                                file_name=pdf_filename,
+                                mime="application/pdf",
+                                key=f"smart_recap_download_pdf_{current_session_id}_{key}",
+                            )
+                        _render_readonly_text_block("", re.sub(r"^\s*Description\s*:?\s*", "", plain_body, flags=re.IGNORECASE))
+                except Exception:
+                    st.error(f"{label} recap could not be displayed.")
 
         return requested_tone
