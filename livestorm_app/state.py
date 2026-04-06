@@ -52,6 +52,7 @@ SESSION_DEFAULTS = {
     "content_repurpose_language": "English",
     "smart_recap_in_progress": False,
     "smart_recap_in_progress_tone": "",
+    "smart_recap_job_id": "",
     "transcript_speaker_names": {},
     "load_event_sessions_in_progress": False,
     "last_fetched_chat_session_id": "",
@@ -91,6 +92,7 @@ def clear_analysis_output() -> None:
     st.session_state["smart_recap_ran"] = False
     st.session_state["smart_recap_in_progress"] = False
     st.session_state["smart_recap_in_progress_tone"] = ""
+    st.session_state["smart_recap_job_id"] = ""
 
 
 def reset_chat_question_state() -> None:

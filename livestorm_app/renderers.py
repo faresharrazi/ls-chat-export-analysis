@@ -38,6 +38,12 @@ from livestorm_app.services import (
 )
 
 
+@st.cache_data(show_spinner=False)
+def _read_file_base64(path_str: str) -> str:
+    with open(path_str, "rb") as file_obj:
+        return base64.b64encode(file_obj.read()).decode("ascii")
+
+
 def _render_chart_picker(title: str, chart_specs: List[ChartSpec], default_keys: List[str], key: str) -> List[ChartSpec]:
     st.caption(title)
     options = {chart.label: chart for chart in chart_specs}
@@ -1123,7 +1129,7 @@ def render_smart_recap_block(
             ("surprise", "Suprise Me!", SMART_RECAP_SURPRISE_ICON_PATH),
         ]
         if SMART_RECAP_SURPRISE_ICON_PATH.exists():
-            surprise_icon_b64 = base64.b64encode(SMART_RECAP_SURPRISE_ICON_PATH.read_bytes()).decode("ascii")
+            surprise_icon_b64 = _read_file_base64(str(SMART_RECAP_SURPRISE_ICON_PATH))
             st.markdown(
                 f"""
                 <style>
@@ -1190,33 +1196,40 @@ def render_smart_recap_block(
                     plain_description = _normalize_markdown_for_display(description)
                     plain_body = plain_description or _normalize_markdown_for_display(markdown)
                     pdf_title = title.strip() if title.strip() else "Smart Recap"
-                    recap_ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
-                    downloads: List[Tuple[str, bytes, str, str]] = [
-                        (
-                            "(MD)",
-                            markdown.encode("utf-8"),
-                            f"livestorm-smart-recap-{label.lower()}-{current_session_id}-{recap_ts}.md",
-                            "text/markdown",
-                        )
-                    ]
-                    try:
-                        pdf_source = plain_body if plain_body else _normalize_markdown_for_display(markdown)
-                        pdf_bytes = analysis_markdown_to_pdf_bytes(pdf_source, title=pdf_title)
-                        downloads.append(
-                            (
-                                "(PDF)",
-                                pdf_bytes,
-                                f"livestorm-smart-recap-{label.lower()}-{current_session_id}-{recap_ts}.pdf",
-                                "application/pdf",
-                            )
-                        )
-                    except RuntimeError:
-                        pass
+                    md_filename = f"livestorm-smart-recap-{label.lower()}-{current_session_id}.md"
+                    pdf_filename = f"livestorm-smart-recap-{label.lower()}-{current_session_id}.pdf"
+                    pdf_state_key = f"smart_recap_pdf_bytes_{current_session_id}_{key}"
+                    pdf_button_key = f"smart_recap_prepare_pdf_{current_session_id}_{key}"
 
+                    download_links: List[Tuple[str, bytes, str, str]] = [
+                        ("(MD)", markdown.encode("utf-8"), md_filename, "text/markdown")
+                    ]
                     if title:
-                        _render_inline_download_links(title, downloads)
+                        _render_inline_download_links(title, download_links)
                     else:
-                        _render_inline_download_links(label, downloads)
+                        _render_inline_download_links(label, download_links)
+
+                    prepare_pdf = st.button(
+                        "Prepare PDF",
+                        key=pdf_button_key,
+                        type="secondary",
+                    )
+                    if prepare_pdf and pdf_state_key not in st.session_state:
+                        pdf_source = plain_body if plain_body else _normalize_markdown_for_display(markdown)
+                        try:
+                            st.session_state[pdf_state_key] = analysis_markdown_to_pdf_bytes(pdf_source, title=pdf_title)
+                        except RuntimeError:
+                            st.info("PDF export is unavailable until `reportlab` is installed.")
+
+                    pdf_bytes = st.session_state.get(pdf_state_key)
+                    if isinstance(pdf_bytes, bytes) and pdf_bytes:
+                        st.download_button(
+                            "Download PDF",
+                            data=pdf_bytes,
+                            file_name=pdf_filename,
+                            mime="application/pdf",
+                            key=f"smart_recap_download_pdf_{current_session_id}_{key}",
+                        )
                     _render_readonly_text_block("", re.sub(r"^\s*Description\s*:?\s*", "", plain_body, flags=re.IGNORECASE))
 
         return requested_tone

@@ -75,10 +75,27 @@ logger = logging.getLogger(__name__)
 job_manager = get_background_job_manager()
 
 TRANSCRIPT_POLL_INTERVAL_SECONDS = 1
+SMART_RECAP_MAX_TRANSCRIPT_CHARS = 14000
 
 
 def build_transcript_request_signature(session_id: str) -> str:
     return str(session_id).strip()
+
+
+def build_smart_recap_source_text(transcript_payload: Dict[str, Any], max_chars: int = SMART_RECAP_MAX_TRANSCRIPT_CHARS) -> str:
+    transcript_text = build_transcript_plain_text(transcript_payload)
+    if len(transcript_text) <= max_chars:
+        return transcript_text
+
+    head_chars = int(max_chars * 0.7)
+    tail_chars = max_chars - head_chars
+    head_text = transcript_text[:head_chars].strip()
+    tail_text = transcript_text[-tail_chars:].strip()
+    if not head_text:
+        return tail_text
+    if not tail_text:
+        return head_text
+    return f"{head_text}\n\n{tail_text}"
 
 
 def set_api_error_details(resource_label: str, details: dict | None) -> None:
@@ -252,6 +269,83 @@ def run_chat_questions_job(api_key: str, session_id: str) -> Dict[str, Any]:
         )
 
 
+def run_smart_recap_job(api_key: str, tone: str, transcript_text: str) -> Dict[str, Any]:
+    started_at = time.perf_counter()
+    try:
+        prompt_text = build_smart_recap_prompt(tone)
+        markdown = analyze_with_openai(
+            api_key=api_key,
+            model=DEFAULT_OPENAI_MODEL,
+            system_prompt=prompt_text,
+            output_language="English",
+            selected_sources=[],
+            derived_stats={},
+            transcript_text=transcript_text,
+            max_tokens=900,
+        )
+        return {
+            "ok": True,
+            "tone": tone,
+            "markdown": markdown,
+            "elapsed_seconds": round(time.perf_counter() - started_at, 2),
+            "transcript_chars": len(transcript_text),
+        }
+    except requests.HTTPError as exc:
+        logger.exception("Smart recap background request failed", extra={"tone": tone})
+        return build_failed_job_result(
+            format_generic_http_error(exc, "Smart Recap"),
+            details=build_http_error_debug_details(exc, "Smart Recap"),
+        )
+    except requests.RequestException as exc:
+        logger.exception("Smart recap background network error", extra={"tone": tone})
+        return build_failed_job_result(
+            f"Smart Recap network error: {exc}",
+            details=build_request_exception_debug_details(exc, "Smart Recap"),
+        )
+
+
+def apply_smart_recap_job_result(job_result: Dict[str, Any]) -> None:
+    if not job_result.get("ok"):
+        set_api_error_details("Smart Recap", job_result.get("details"))
+        set_api_error_message(str(job_result.get("message") or "Smart Recap request failed."))
+        st.session_state["smart_recap_in_progress"] = False
+        st.session_state["smart_recap_in_progress_tone"] = ""
+        st.session_state["smart_recap_job_id"] = ""
+        clear_background_notice()
+        return
+
+    smart_recap_bundle = st.session_state.get("smart_recap_bundle", {})
+    if not isinstance(smart_recap_bundle, dict):
+        smart_recap_bundle = {}
+
+    tone = str(job_result.get("tone") or "").strip().lower()
+    markdown = str(job_result.get("markdown") or "").strip()
+    if tone and markdown:
+        smart_recap_bundle[tone] = markdown
+
+    st.session_state["smart_recap_bundle"] = smart_recap_bundle
+    st.session_state["smart_recap_ran"] = bool(
+        any(isinstance(value, str) and value.strip() for value in smart_recap_bundle.values())
+    )
+    st.session_state["smart_recap_in_progress"] = False
+    st.session_state["smart_recap_in_progress_tone"] = ""
+    st.session_state["smart_recap_job_id"] = ""
+
+    current_session_id = str(st.session_state.get("current_session_id") or "").strip()
+    api_key = st.session_state.get("api_key_input", os.getenv("LS_API_KEY", ""))
+    if current_session_id and api_key and isinstance(smart_recap_bundle, dict) and smart_recap_bundle:
+        persist_cached_session_safely(api_key, current_session_id, smart_recap_bundle=smart_recap_bundle)
+
+    elapsed_seconds = job_result.get("elapsed_seconds")
+    transcript_chars = job_result.get("transcript_chars")
+    if isinstance(elapsed_seconds, (int, float)) and isinstance(transcript_chars, int):
+        set_background_notice(
+            f"Smart Recap ready in {elapsed_seconds:.2f}s using {transcript_chars:,} transcript characters."
+        )
+    else:
+        clear_background_notice()
+
+
 def apply_chat_questions_job_result(job_result: Dict[str, Any]) -> None:
     if not job_result.get("ok"):
         set_api_error_details("Chat & Questions", job_result.get("details"))
@@ -383,6 +477,7 @@ def fail_transcript_job(message: str, details: Dict[str, Any] | None = None, *, 
 
 def render_background_jobs_panel() -> None:
     chat_job_id = str(st.session_state.get("chat_fetch_job_id") or "").strip()
+    smart_recap_job_id = str(st.session_state.get("smart_recap_job_id") or "").strip()
 
     def render_panel() -> None:
         active_labels: List[str] = []
@@ -408,11 +503,38 @@ def render_background_jobs_panel() -> None:
                 st.session_state["fetch_in_progress"] = False
                 st.session_state["chat_fetch_job_id"] = ""
 
+        if smart_recap_job_id:
+            snapshot = job_manager.get(smart_recap_job_id)
+            if snapshot and snapshot.get("done"):
+                result = snapshot.get("result")
+                if isinstance(result, dict):
+                    apply_smart_recap_job_result(result)
+                elif snapshot.get("exception") is not None:
+                    apply_smart_recap_job_result(
+                        build_failed_job_result(
+                            "Smart Recap background job failed unexpectedly.",
+                            details={"exception_type": type(snapshot["exception"]).__name__, "message": str(snapshot["exception"])},
+                        )
+                    )
+                job_manager.discard(smart_recap_job_id)
+                st.rerun()
+            elif snapshot:
+                tone = str(st.session_state.get("smart_recap_in_progress_tone") or "smart recap").strip().title()
+                active_labels.append(f"Generating {tone} recap...")
+            else:
+                st.session_state["smart_recap_in_progress"] = False
+                st.session_state["smart_recap_in_progress_tone"] = ""
+                st.session_state["smart_recap_job_id"] = ""
+
         for label in active_labels:
             with st.spinner(label):
                 st.caption(" ")
 
-    if hasattr(st, "fragment") and chat_job_id:
+        notice = str(st.session_state.get("background_job_notice") or "").strip()
+        if notice:
+            st.caption(notice)
+
+    if hasattr(st, "fragment") and (chat_job_id or smart_recap_job_id):
         @st.fragment(run_every="2s")
         def _jobs_fragment() -> None:
             render_panel()
@@ -852,8 +974,27 @@ if content_repurpose_button:
     st.rerun()
 
 if smart_recap_button:
-    st.session_state["smart_recap_in_progress"] = True
-    st.session_state["smart_recap_in_progress_tone"] = str(smart_recap_button)
+    transcript_payload = st.session_state.get("transcript_payload")
+    requested_tone = str(smart_recap_button or "").strip().lower()
+    if transcript_payload is None:
+        st.warning("Smart Recap requires a transcript.")
+    elif not api_analysis_key:
+        st.warning("Smart Recap skipped: missing `OPENAI_API_KEY` in environment.")
+    elif requested_tone not in {"professional", "hype", "surprise"}:
+        st.warning("Please select a valid Smart Recap type.")
+    else:
+        clear_api_error_details()
+        clear_background_notice()
+        st.session_state["smart_recap_in_progress"] = True
+        st.session_state["smart_recap_in_progress_tone"] = requested_tone
+        st.session_state["smart_recap_job_id"] = job_manager.submit(
+            "smart_recap",
+            run_smart_recap_job,
+            context={"tone": requested_tone},
+            api_key=api_analysis_key,
+            tone=requested_tone,
+            transcript_text=build_smart_recap_source_text(transcript_payload),
+        )
     st.rerun()
 
 if st.session_state.get("analysis_in_progress", False):
@@ -1085,53 +1226,4 @@ if st.session_state.get("content_repurpose_in_progress", False):
     if current_session_id and api_key and isinstance(all_bundles, dict) and all_bundles:
         persist_cached_session_safely(api_key, current_session_id, content_repurpose_bundle=all_bundles)
     st.session_state["content_repurpose_in_progress"] = False
-    st.rerun()
-
-if st.session_state.get("smart_recap_in_progress", False):
-    transcript_payload = st.session_state.get("transcript_payload")
-    requested_tone = str(st.session_state.get("smart_recap_in_progress_tone") or "").strip().lower()
-    if transcript_payload is None:
-        st.warning("Smart Recap requires a transcript.")
-        st.session_state["smart_recap_in_progress"] = False
-        st.session_state["smart_recap_in_progress_tone"] = ""
-        st.rerun()
-    if not api_analysis_key:
-        st.warning("Smart Recap skipped: missing `OPENAI_API_KEY` in environment.")
-        st.session_state["smart_recap_in_progress"] = False
-        st.session_state["smart_recap_in_progress_tone"] = ""
-        st.rerun()
-
-    smart_recap_bundle = st.session_state.get("smart_recap_bundle", {})
-    if not isinstance(smart_recap_bundle, dict):
-        smart_recap_bundle = {}
-    try:
-        if requested_tone in {"professional", "hype", "surprise"}:
-            prompt_text = build_smart_recap_prompt(requested_tone)
-            smart_recap_bundle[requested_tone] = analyze_with_openai(
-                api_key=api_analysis_key,
-                model=DEFAULT_OPENAI_MODEL,
-                system_prompt=prompt_text,
-                output_language="English",
-                selected_sources=[],
-                derived_stats={},
-                transcript_text=build_transcript_plain_text(transcript_payload),
-                max_tokens=900,
-            )
-    except requests.HTTPError as exc:
-        logger.exception("Smart recap request failed")
-        set_api_error_details("Smart Recap", build_http_error_debug_details(exc, "Smart Recap"))
-        set_api_error_message(format_generic_http_error(exc, "Smart Recap"))
-    except requests.RequestException as exc:
-        logger.exception("Smart recap network error")
-        set_api_error_details("Smart Recap", build_request_exception_debug_details(exc, "Smart Recap"))
-        set_api_error_message(f"Smart Recap network error: {exc}")
-
-    st.session_state["smart_recap_bundle"] = smart_recap_bundle
-    st.session_state["smart_recap_ran"] = bool(
-        any(isinstance(value, str) and value.strip() for value in smart_recap_bundle.values())
-    )
-    if current_session_id and api_key and isinstance(smart_recap_bundle, dict) and smart_recap_bundle:
-        persist_cached_session_safely(api_key, current_session_id, smart_recap_bundle=smart_recap_bundle)
-    st.session_state["smart_recap_in_progress"] = False
-    st.session_state["smart_recap_in_progress_tone"] = ""
     st.rerun()
