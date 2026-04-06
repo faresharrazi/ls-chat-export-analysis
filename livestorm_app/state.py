@@ -17,8 +17,11 @@ SESSION_DEFAULTS = {
     "deep_analysis_md": "",
     "deep_analysis_ran": False,
     "content_repurpose_md": "",
+    "content_repurpose_bundle": {},
     "content_repurpose_ran": False,
     "content_repurpose_history": [],
+    "smart_recap_bundle": {},
+    "smart_recap_ran": False,
     "questions_payload": None,
     "questions_df": None,
     "event_sessions": [],
@@ -31,6 +34,7 @@ SESSION_DEFAULTS = {
     "transcript_text": "",
     "transcript_fetch_in_progress": False,
     "chat_fetch_job_id": "",
+    "fetch_data_in_progress": False,
     "analysis_include_chat": False,
     "analysis_include_questions": False,
     "analysis_include_chat_questions": False,
@@ -43,8 +47,9 @@ SESSION_DEFAULTS = {
     "analysis_language": "English",
     "deep_analysis_in_progress": False,
     "content_repurpose_in_progress": False,
-    "content_repurpose_type": "summary",
     "content_repurpose_language": "English",
+    "smart_recap_in_progress": False,
+    "smart_recap_in_progress_tone": "",
     "transcript_speaker_names": {},
     "load_event_sessions_in_progress": False,
     "last_fetched_chat_session_id": "",
@@ -74,9 +79,14 @@ def clear_analysis_output() -> None:
     st.session_state["deep_analysis_ran"] = False
     st.session_state["deep_analysis_in_progress"] = False
     st.session_state["content_repurpose_md"] = ""
+    st.session_state["content_repurpose_bundle"] = {}
     st.session_state["content_repurpose_ran"] = False
     st.session_state["content_repurpose_in_progress"] = False
     st.session_state["content_repurpose_history"] = []
+    st.session_state["smart_recap_bundle"] = {}
+    st.session_state["smart_recap_ran"] = False
+    st.session_state["smart_recap_in_progress"] = False
+    st.session_state["smart_recap_in_progress_tone"] = ""
 
 
 def reset_chat_question_state() -> None:

@@ -4,7 +4,7 @@ from livestorm_app.charts.common import go, render_chart_fallback
 
 
 def render_speaker_turn_timeline_chart(insights):
-    st.markdown("**Speaker Turn Timeline**")
+    st.markdown("**Timeline Per Speaker**")
     speaker_turns_df = insights.get("speaker_turns_df")
     if speaker_turns_df is None or speaker_turns_df.empty:
         st.info("Speaker turns are not available.")

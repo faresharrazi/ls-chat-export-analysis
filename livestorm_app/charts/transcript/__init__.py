@@ -1,50 +1,55 @@
 from livestorm_app.charts.common import ChartSpec
-from livestorm_app.charts.transcript.clarity_score import render_clarity_score_chart
-from livestorm_app.charts.transcript.cognitive_load import render_cognitive_load_chart
-from livestorm_app.charts.transcript.confidence_distribution import render_confidence_distribution_chart
-from livestorm_app.charts.transcript.engagement_score import render_engagement_score_chart
-from livestorm_app.charts.transcript.filler_words import render_filler_words_chart
-from livestorm_app.charts.transcript.interruptions import render_interruptions_chart
-from livestorm_app.charts.transcript.named_entities import render_named_entities_chart
+from livestorm_app.charts.transcript.global_wpm import render_global_wpm_chart
 from livestorm_app.charts.transcript.pause_distribution import render_pause_distribution_chart
-from livestorm_app.charts.transcript.replay_navigation import render_replay_navigation_chart
-from livestorm_app.charts.transcript.response_time import render_response_time_chart
-from livestorm_app.charts.transcript.sentence_length_distribution import render_sentence_length_distribution_chart
 from livestorm_app.charts.transcript.silence_timeline import render_silence_timeline_chart
 from livestorm_app.charts.transcript.speaker_airtime import render_speaker_airtime_chart
+from livestorm_app.charts.transcript.speaker_changes_timeline import render_speaker_changes_timeline_chart
 from livestorm_app.charts.transcript.speaker_turn_timeline import render_speaker_turn_timeline_chart
-from livestorm_app.charts.transcript.speaking_burst import render_speaking_burst_chart
+from livestorm_app.charts.transcript.speaking_burst_duration import render_speaking_burst_duration_chart
 from livestorm_app.charts.transcript.speaking_pace import render_speaking_pace_chart
-from livestorm_app.charts.transcript.top_keywords import render_top_keywords_chart
-from livestorm_app.charts.transcript.topic_timeline import render_topic_timeline_chart
+from livestorm_app.charts.transcript.utterance_duration_distribution import render_utterance_duration_distribution_chart
+from livestorm_app.charts.transcript.words_over_time import render_words_over_time_chart
+from livestorm_app.charts.transcript.words_per_speaker import render_words_per_speaker_chart
 
 
-TRANSCRIPT_CHARTS = [
-    ChartSpec("silence_timeline", "Silence Timeline", render_silence_timeline_chart),
-    ChartSpec("speaking_pace", "Speaking Pace Over Time", render_speaking_pace_chart),
-    ChartSpec("speaker_airtime", "Speaker Airtime Distribution", render_speaker_airtime_chart),
-    ChartSpec("speaker_turns", "Speaker Turn Timeline", render_speaker_turn_timeline_chart),
-    ChartSpec("pause_distribution", "Pause Distribution Histogram", render_pause_distribution_chart),
-    ChartSpec("filler_words", "Filler Words Frequency", render_filler_words_chart),
-    ChartSpec("sentence_length", "Sentence Length Distribution", render_sentence_length_distribution_chart),
-    ChartSpec("confidence_distribution", "Confidence Score Distribution", render_confidence_distribution_chart),
-    ChartSpec("engagement_score", "Engagement Score Over Time", render_engagement_score_chart),
-    ChartSpec("speaking_burst", "Speaking Burst Analysis", render_speaking_burst_chart),
-    ChartSpec("topic_timeline", "Topic Timeline", render_topic_timeline_chart),
-    ChartSpec("named_entities", "Named Entities Chart", render_named_entities_chart),
-    ChartSpec("top_keywords", "Top Keywords", render_top_keywords_chart),
-    ChartSpec("interruptions", "Interruptions / Overlaps", render_interruptions_chart),
-    ChartSpec("response_time", "Response Time Between Speakers", render_response_time_chart),
-    ChartSpec("cognitive_load", "Cognitive Load Index", render_cognitive_load_chart),
-    ChartSpec("clarity_score", "Clarity Score", render_clarity_score_chart),
-    ChartSpec("replay_navigation", "Replay Navigation Map", render_replay_navigation_chart),
+PAUSE_TRANSCRIPT_CHARTS = [
+    ChartSpec("pause_distribution", "Pause Histogram", render_pause_distribution_chart),
+    ChartSpec("silence_timeline", "Pause Timeline", render_silence_timeline_chart),
 ]
 
-DEFAULT_TRANSCRIPT_CHART_KEYS = [
-    "silence_timeline",
-    "speaking_pace",
-    "speaker_airtime",
-    "pause_distribution",
-    "engagement_score",
-    "topic_timeline",
+PACE_TRANSCRIPT_CHARTS = [
+    ChartSpec("global_wpm", "Words Per Minute (Global)", render_global_wpm_chart),
+    ChartSpec("speaking_pace", "Words Per Minute Over Time", render_speaking_pace_chart),
+]
+
+SPEAKER_TRANSCRIPT_CHARTS = [
+    ChartSpec("speaker_airtime", "Pie Chart Per Speaker", render_speaker_airtime_chart),
+    ChartSpec("speaker_timeline", "Timeline Per Speaker", render_speaker_turn_timeline_chart),
+]
+
+TURN_TRANSCRIPT_CHARTS = [
+    ChartSpec("speaker_changes_timeline", "Timeline Of Speaker Changes", render_speaker_changes_timeline_chart),
+]
+
+UTTERANCE_DURATION_TRANSCRIPT_CHARTS = [
+    ChartSpec("utterance_duration_distribution", "Distribution Of Utterance Length", render_utterance_duration_distribution_chart),
+]
+
+WORD_COUNT_TRANSCRIPT_CHARTS = [
+    ChartSpec("words_per_speaker", "Words Per Speaker", render_words_per_speaker_chart),
+    ChartSpec("words_over_time", "Words Over Time", render_words_over_time_chart),
+]
+
+BURST_TRANSCRIPT_CHARTS = [
+    ChartSpec("speaking_burst_duration", "Speaking Duration Before Pause", render_speaking_burst_duration_chart),
+]
+
+TRANSCRIPT_CHART_CATEGORIES = [
+    ("Silence / Pause Metrics", PAUSE_TRANSCRIPT_CHARTS),
+    ("Speaking Pace", PACE_TRANSCRIPT_CHARTS),
+    ("Speaker Airtime", SPEAKER_TRANSCRIPT_CHARTS),
+    ("Speaker Turns", TURN_TRANSCRIPT_CHARTS),
+    ("Utterance Duration", UTTERANCE_DURATION_TRANSCRIPT_CHARTS),
+    ("Words Count", WORD_COUNT_TRANSCRIPT_CHARTS),
+    ("Speaking Segments", BURST_TRANSCRIPT_CHARTS),
 ]

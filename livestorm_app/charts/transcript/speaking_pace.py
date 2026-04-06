@@ -4,7 +4,7 @@ from livestorm_app.charts.common import PLOTLY_AVAILABLE, apply_default_layout, 
 
 
 def render_speaking_pace_chart(insights):
-    st.markdown("**Speaking Pace Over Time**")
+    st.markdown("**Words Per Minute Over Time**")
     pace_df = insights.get("pace_df")
     if pace_df is None or pace_df.empty:
         st.info("No pace data is available for this transcript.")

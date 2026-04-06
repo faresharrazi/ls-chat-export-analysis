@@ -4,7 +4,7 @@ from livestorm_app.charts.common import brand_bar_chart, render_chart_fallback, 
 
 
 def render_pause_distribution_chart(insights):
-    st.markdown("**Pause Distribution Histogram**")
+    st.markdown("**Pause Histogram**")
     pause_distribution_df = insights.get("pause_distribution_df")
     if pause_distribution_df is None or pause_distribution_df.empty:
         st.info("No qualifying pauses were found.")

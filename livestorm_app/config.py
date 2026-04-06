@@ -24,12 +24,18 @@ CONTENT_REPURPOSE_SUMMARY_PROMPT_PATH = PROMPTS_DIR / "content_repurpose_summary
 CONTENT_REPURPOSE_EMAIL_PROMPT_PATH = PROMPTS_DIR / "content_repurpose_email_prompt.txt"
 CONTENT_REPURPOSE_BLOG_PROMPT_PATH = PROMPTS_DIR / "content_repurpose_blog_prompt.txt"
 CONTENT_REPURPOSE_SOCIAL_MEDIA_PROMPT_PATH = PROMPTS_DIR / "content_repurpose_social_media_prompt.txt"
+SMART_RECAP_PROFESSIONAL_PROMPT_PATH = PROMPTS_DIR / "smart_recap_professional_prompt.txt"
+SMART_RECAP_HYPE_PROMPT_PATH = PROMPTS_DIR / "smart_recap_hype_prompt.txt"
+SMART_RECAP_SURPRISE_PROMPT_PATH = PROMPTS_DIR / "smart_recap_surprise_prompt.txt"
 ENV_PATH = Path(".env")
 BASE_DIR = Path(__file__).resolve().parent.parent
 ASSETS_DIR = BASE_DIR / "assets"
 ICONS_DIR = ASSETS_DIR / "icons"
 ICON_PATH = ICONS_DIR / "Icon-Livestorm-Primary.png"
 HEADER_ICON_PATH = ICONS_DIR / "Icon-Livestorm-Tertiary-Light.png"
+SMART_RECAP_PROFESSIONAL_ICON_PATH = ICONS_DIR / "professional.png"
+SMART_RECAP_HYPE_ICON_PATH = ICONS_DIR / "marketing.png"
+SMART_RECAP_SURPRISE_ICON_PATH = ICONS_DIR / "surprise.png"
 OUTPUT_LANGUAGE_MAP = {
     "English": "English",
     "French": "French",
@@ -218,7 +224,7 @@ def apply_brand_styles() -> None:
           background: var(--ls-surface-soft);
           border: 1px solid var(--ls-line);
           border-radius: 16px;
-          overflow: hidden;
+          overflow: visible;
           margin-bottom: 0.9rem;
         }
 

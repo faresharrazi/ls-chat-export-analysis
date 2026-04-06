@@ -27,6 +27,9 @@ from livestorm_app.config import (
     DEFAULT_PAGE_SIZE,
     MAX_PAGES,
     OPENAI_CHAT_COMPLETIONS_URL,
+    SMART_RECAP_HYPE_PROMPT_PATH,
+    SMART_RECAP_PROFESSIONAL_PROMPT_PATH,
+    SMART_RECAP_SURPRISE_PROMPT_PATH,
     START_PAGE_NUMBER,
     TRANSCRIPT_JOBS_API_URL,
 )
@@ -788,6 +791,149 @@ def build_content_repurpose_prompt(content_type: str) -> str:
     )
 
 
+def build_content_repurpose_bundle_prompt() -> str:
+    return (
+        "You are a content repurposing specialist.\n\n"
+        "Use only the provided transcript text. Do not use chat, questions, metadata, stats, or outside facts.\n"
+        "If the transcript text is missing or blank, return exactly: {\"summary\":\"Transcript is empty.\","
+        "\"blog\":\"Transcript is empty.\",\"email\":\"Transcript is empty.\",\"social_media\":\"Transcript is empty.\"}\n\n"
+        "Return valid JSON only with exactly these string keys:\n"
+        "- summary\n"
+        "- blog\n"
+        "- email\n"
+        "- social_media\n\n"
+        "Each value must be markdown content in the requested output language.\n\n"
+        "Requirements for `summary`:\n"
+        "- 500-700 words.\n"
+        "- Use heading hierarchy with `#`, `##`, and `###`.\n"
+        "- Include only well-supported sections.\n"
+        "- Suggested structure: `# Event Summary`, `## Introduction`, `## Key Points Discussed`, `## Notable Quotes`, `## Key Takeaways`, `## Next Steps Or Call To Action`.\n\n"
+        "Requirements for `blog`:\n"
+        "- 1000-1500 words.\n"
+        "- Start with `Meta description: ...` then `# Title`.\n"
+        "- Use descriptive `##` and `###` headings.\n"
+        "- Write a strong standalone article based strictly on the transcript.\n\n"
+        "Requirements for `email`:\n"
+        "- Markdown only.\n"
+        "- Include `# Subject Line Options`, `# Email Version 1`, and `# Email Version 2`.\n"
+        "- Each email should read naturally in paragraphs and stay around 200-300 words.\n\n"
+        "Requirements for `social_media`:\n"
+        "- Markdown only.\n"
+        "- Include `# LinkedIn`, `# Facebook`, and `# X / Twitter`.\n"
+        "- For each platform provide one polished post and 2-4 suggested hashtags.\n"
+        "- Keep the X / Twitter version within 280 characters.\n\n"
+        "Do not wrap the JSON in code fences."
+    )
+
+
+def _extract_json_object_from_text(text: str) -> str:
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        return ""
+    fenced_match = re.search(r"```(?:json)?\s*(\{.*\})\s*```", cleaned, flags=re.DOTALL | re.IGNORECASE)
+    if fenced_match:
+        return fenced_match.group(1).strip()
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        return cleaned[start:end + 1].strip()
+    return cleaned
+
+
+def parse_content_repurpose_bundle_response(response_text: str) -> Dict[str, str]:
+    empty_bundle = {"summary": "", "blog": "", "email": "", "social_media": ""}
+    json_text = _extract_json_object_from_text(response_text)
+    if not json_text:
+        return empty_bundle
+    try:
+        payload = json.loads(json_text)
+    except json.JSONDecodeError:
+        return empty_bundle
+    if not isinstance(payload, dict):
+        return empty_bundle
+    return {
+        key: str(payload.get(key) or "").strip()
+        for key in ["summary", "blog", "email", "social_media"]
+    }
+
+
+def generate_content_repurpose_bundle_with_openai(
+    api_key: str,
+    model: str,
+    output_language: str,
+    transcript_text: str,
+) -> Dict[str, str]:
+    transcript_text = str(transcript_text or "").strip()
+    if not transcript_text:
+        return {
+            "summary": "Transcript is empty.",
+            "blog": "Transcript is empty.",
+            "email": "Transcript is empty.",
+            "social_media": "Transcript is empty.",
+        }
+
+    messages: List[Dict[str, str]] = [
+        {"role": "system", "content": build_content_repurpose_bundle_prompt()},
+        {"role": "system", "content": f"Respond only in {output_language}."},
+        {"role": "user", "content": f"Transcript text:\n\n{transcript_text}"},
+    ]
+    resp = requests.post(
+        OPENAI_CHAT_COMPLETIONS_URL,
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json={
+            "model": model,
+            "temperature": 0.2,
+            "messages": messages,
+        },
+        timeout=120,
+    )
+    resp.raise_for_status()
+    payload = resp.json()
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return {"summary": "", "blog": "", "email": "", "social_media": ""}
+    message = choices[0].get("message", {})
+    content = message.get("content")
+    content_text = ""
+    if isinstance(content, str):
+        content_text = content.strip()
+    elif isinstance(content, list):
+        text_parts: List[str] = []
+        for item in content:
+            if isinstance(item, str) and item.strip():
+                text_parts.append(item.strip())
+                continue
+            if isinstance(item, dict):
+                value = item.get("text") or item.get("output_text")
+                if isinstance(value, str) and value.strip():
+                    text_parts.append(value.strip())
+        content_text = "\n".join(text_parts).strip()
+    elif isinstance(content, dict):
+        for key in ("text", "output_text", "content"):
+            value = content.get(key)
+            if isinstance(value, str) and value.strip():
+                content_text = value.strip()
+                break
+    return parse_content_repurpose_bundle_response(content_text)
+
+
+def build_smart_recap_prompt(tone: str) -> str:
+    prompt_map = {
+        "professional": SMART_RECAP_PROFESSIONAL_PROMPT_PATH,
+        "hype": SMART_RECAP_HYPE_PROMPT_PATH,
+        "surprise": SMART_RECAP_SURPRISE_PROMPT_PATH,
+    }
+    prompt_path = prompt_map.get(tone)
+    if prompt_path is not None:
+        prompt = load_analysis_prompt(prompt_path)
+        if prompt.strip():
+            return prompt
+    return (
+        "You create short transcript-only session recaps. Return markdown with exactly `# Title` and "
+        "`# Description`. Use only the transcript text, avoid outside facts, and match the requested tone."
+    )
+
+
 def analysis_markdown_to_pdf_bytes(markdown_text: str, title: str) -> bytes:
     try:
         from reportlab.lib import colors
@@ -1238,11 +1384,29 @@ def _extract_sentence_items(transcript_payload: Dict[str, Any], transcript: Dict
 
 
 def _extract_named_entity_items(transcript_payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    transcript = _extract_transcript_object(transcript_payload)
+    candidate_containers: List[Dict[str, Any]] = []
+
+    if isinstance(transcript_payload, dict):
+        candidate_containers.append(transcript_payload)
+
     result = transcript_payload.get("result")
     if isinstance(result, dict):
-        ner_payload = result.get("named_entity_recognition")
+        candidate_containers.append(result)
+
+    if isinstance(transcript, dict):
+        candidate_containers.append(transcript)
+        nested_result = transcript.get("result")
+        if isinstance(nested_result, dict):
+            candidate_containers.append(nested_result)
+
+    for container in candidate_containers:
+        ner_payload = container.get("named_entity_recognition")
         if isinstance(ner_payload, dict) and isinstance(ner_payload.get("results"), list):
             return [item for item in ner_payload.get("results") if isinstance(item, dict)]
+        if isinstance(ner_payload, list):
+            return [item for item in ner_payload if isinstance(item, dict)]
+
     direct_entities = transcript_payload.get("named_entities")
     if isinstance(direct_entities, list):
         return [item for item in direct_entities if isinstance(item, dict)]
@@ -1326,6 +1490,7 @@ def build_transcript_insights(transcript_payload: Dict[str, Any]) -> Dict[str, A
             "low_energy_df": pd.DataFrame(),
             "burst_df": pd.DataFrame(),
             "burst_distribution_df": pd.DataFrame(),
+            "utterance_duration_distribution_df": pd.DataFrame(),
             "topic_timeline_df": pd.DataFrame(),
             "named_entities_df": pd.DataFrame(),
             "numbers_df": pd.DataFrame(),
@@ -1485,9 +1650,9 @@ def build_transcript_insights(transcript_payload: Dict[str, Any]) -> Dict[str, A
 
     silence_rows: List[Dict[str, Any]] = []
     pause_threshold_seconds = 0.75
-    silence_source_df = words_df if not words_df.empty else ordered_df
-    first_start = silence_source_df["start_seconds"].dropna().min() if "start_seconds" in silence_source_df.columns else None
-    last_end = silence_source_df["end_seconds"].dropna().max() if "end_seconds" in silence_source_df.columns else None
+    silence_source_df = words_df.copy() if not words_df.empty else ordered_df.copy()
+    first_start = silence_source_df["start_seconds"].dropna().min() if not silence_source_df.empty else None
+    last_end = silence_source_df["end_seconds"].dropna().max() if not silence_source_df.empty else None
 
     def classify_pause(gap_seconds: float) -> str:
         if gap_seconds < 0.3:
@@ -1519,8 +1684,8 @@ def build_transcript_insights(transcript_payload: Dict[str, Any]) -> Dict[str, A
             continue
         gap_seconds = float(current_start) - float(previous_end)
         if gap_seconds >= pause_threshold_seconds:
-            previous_speaker = silence_source_df.loc[idx - 1, "speaker"] if "speaker" in silence_source_df.columns else None
-            current_speaker = silence_source_df.loc[idx, "speaker"] if "speaker" in silence_source_df.columns else None
+            previous_speaker = silence_source_df.loc[idx - 1, "speaker"]
+            current_speaker = silence_source_df.loc[idx, "speaker"]
             silence_rows.append(
                 {
                     "silence_start_seconds": float(previous_end),
@@ -1751,6 +1916,22 @@ def build_transcript_insights(transcript_payload: Dict[str, Any]) -> Dict[str, A
         )
         burst_distribution_df = burst_df.groupby("burst_duration_bin", as_index=False, observed=False).agg(count=("speaker", "size"))
 
+    utterance_duration_distribution_df = pd.DataFrame(columns=["duration_bin", "count"])
+    if not ordered_df.empty:
+        utterance_duration_working = ordered_df.dropna(subset=["duration_seconds"]).copy()
+        if not utterance_duration_working.empty:
+            utterance_duration_working["duration_bin"] = pd.cut(
+                utterance_duration_working["duration_seconds"],
+                bins=[0, 5, 10, 20, 30, float("inf")],
+                labels=["0-5s", "5-10s", "10-20s", "20-30s", "30s+"],
+                include_lowest=True,
+                right=False,
+            )
+            utterance_duration_distribution_df = (
+                utterance_duration_working.groupby("duration_bin", as_index=False, observed=False)
+                .agg(count=("duration_seconds", "size"))
+            )
+
     segment_mix_df = ordered_df.copy()
     segment_mix_df["segment_style"] = segment_mix_df["duration_seconds"].apply(
         lambda value: "Quick hits" if pd.notna(value) and float(value) < 5
@@ -1792,14 +1973,14 @@ def build_transcript_insights(transcript_payload: Dict[str, Any]) -> Dict[str, A
     if not valid_starts.empty and not valid_ends.empty:
         full_span_seconds = max(float(valid_ends.max()) - float(valid_starts.min()), 0.0)
 
-    named_entity_rows = []
+    raw_named_entity_rows = []
     for entity in _extract_named_entity_items(transcript_payload):
         entity_text = str(entity.get("text") or "").strip()
         entity_type = str(entity.get("entity_type") or entity.get("type") or "Unknown").strip()
         start_seconds = _coerce_seconds(entity.get("start"))
         if not entity_text:
             continue
-        named_entity_rows.append(
+        raw_named_entity_rows.append(
             {
                 "entity": entity_text,
                 "entity_type": entity_type,
@@ -1807,7 +1988,7 @@ def build_transcript_insights(transcript_payload: Dict[str, Any]) -> Dict[str, A
                 "time_label": format_seconds_label(start_seconds),
             }
         )
-    named_entities_df = pd.DataFrame(named_entity_rows)
+    named_entities_df = pd.DataFrame(raw_named_entity_rows)
     if not named_entities_df.empty:
         named_entities_df = (
             named_entities_df.groupby(["entity", "entity_type"], as_index=False)
@@ -1821,29 +2002,82 @@ def build_transcript_insights(transcript_payload: Dict[str, Any]) -> Dict[str, A
         named_entities_df["first_seen_label"] = named_entities_df["first_seen_seconds"].apply(format_seconds_label)
 
     numbers_rows = []
-    number_pattern = re.compile(r"(?<!\w)(?:\$?\d+(?:[.,]\d+)?%?|\d+\s?(?:k|m|b))(?!\w)", re.IGNORECASE)
-    source_for_numbers = sentence_df if not sentence_df.empty else ordered_df
-    for _, row in source_for_numbers.iterrows():
-        text = str(row.get("sentence") or row.get("text") or "").strip()
-        if not text:
-            continue
-        matches = number_pattern.findall(text)
-        for match in matches:
-            cleaned = str(match).strip()
-            number_type = "Percentage" if "%" in cleaned else "Currency" if "$" in cleaned else "Metric"
-            numbers_rows.append(
-                {
-                    "mention": cleaned,
-                    "kind": number_type,
-                    "speaker": row.get("speaker"),
-                    "time_seconds": row.get("start_seconds"),
-                    "time_label": format_seconds_label(_coerce_seconds(row.get("start_seconds"))),
-                    "context": text[:140],
-                }
+    source_for_entities = sentence_df if not sentence_df.empty else ordered_df
+    entity_type_priority = {
+        "MONEY": 0,
+        "DATE_INTERVAL": 1,
+        "EVENT": 2,
+        "ORGANIZATION": 3,
+        "LOCATION_CITY": 4,
+        "LOCATION_COUNTRY": 5,
+        "NAME": 6,
+        "NAME_GIVEN": 7,
+        "OCCUPATION": 8,
+        "DURATION": 9,
+        "FILENAME": 10,
+    }
+
+    def _find_best_entity_context(entity_text: str, entity_start_seconds: Optional[float]) -> Dict[str, Any]:
+        if source_for_entities.empty:
+            return {}
+
+        best_row = None
+        best_score = None
+        entity_text_lower = entity_text.lower()
+        for _, candidate_row in source_for_entities.iterrows():
+            candidate_text = str(candidate_row.get("sentence") or candidate_row.get("text") or "").strip()
+            candidate_start = _coerce_seconds(candidate_row.get("start_seconds"))
+            candidate_end = _coerce_seconds(candidate_row.get("end_seconds"))
+            contains_entity = bool(candidate_text) and entity_text_lower in candidate_text.lower()
+            contains_time = (
+                entity_start_seconds is not None
+                and candidate_start is not None
+                and candidate_end is not None
+                and float(candidate_start) <= float(entity_start_seconds) <= float(candidate_end)
             )
+            if contains_entity and contains_time:
+                return candidate_row.to_dict()
+
+            time_distance = abs(float(candidate_start) - float(entity_start_seconds)) if (
+                candidate_start is not None and entity_start_seconds is not None
+            ) else float("inf")
+            score = (
+                0 if contains_entity else 1,
+                0 if contains_time else 1,
+                time_distance,
+            )
+            if best_score is None or score < best_score:
+                best_score = score
+                best_row = candidate_row
+        return best_row.to_dict() if best_row is not None else {}
+
+    for entity_row in raw_named_entity_rows:
+        entity_text = str(entity_row.get("entity") or "").strip()
+        entity_type = str(entity_row.get("entity_type") or "Unknown").strip()
+        start_seconds = _coerce_seconds(entity_row.get("start_seconds"))
+        if not entity_text:
+            continue
+        context_row = _find_best_entity_context(entity_text, start_seconds)
+        numbers_rows.append(
+            {
+                "mention": entity_text,
+                "kind": entity_type,
+                "speaker": context_row.get("speaker"),
+                "time_seconds": start_seconds if start_seconds is not None else context_row.get("start_seconds"),
+                "time_label": format_seconds_label(start_seconds if start_seconds is not None else _coerce_seconds(context_row.get("start_seconds"))),
+                "context": str(context_row.get("sentence") or context_row.get("text") or "").strip()[:180],
+                "ner_context": "",
+                "_priority": entity_type_priority.get(entity_type, 99),
+            }
+        )
     numbers_df = pd.DataFrame(numbers_rows)
     if not numbers_df.empty:
-        numbers_df = numbers_df.drop_duplicates(subset=["mention", "time_label", "context"]).reset_index(drop=True)
+        numbers_df = (
+            numbers_df.drop_duplicates(subset=["mention", "kind", "time_label", "context"])
+            .sort_values(by=["_priority", "time_seconds", "mention"], ascending=[True, True, True], na_position="last")
+            .drop(columns=["_priority"], errors="ignore")
+            .reset_index(drop=True)
+        )
 
     topic_rows = []
     if not ordered_df.empty:
@@ -1981,7 +2215,7 @@ def build_transcript_insights(transcript_payload: Dict[str, Any]) -> Dict[str, A
             continue
         score = 0
         reasons = []
-        if number_pattern.search(text):
+        if (format_seconds_label(_coerce_seconds(row.get("start_seconds"))), text[:180]) in number_lookup:
             score += 2
             reasons.append("numbers")
         if strong_statement_pattern.search(text):
@@ -2051,9 +2285,11 @@ def build_transcript_insights(transcript_payload: Dict[str, Any]) -> Dict[str, A
         )
 
     avg_pause_seconds = round(float(silence_df["gap_seconds"].mean()), 2) if not silence_df.empty else 0.0
+    pause_count_over_1s = int((silence_df["gap_seconds"] > 1.0).sum()) if not silence_df.empty else 0
     avg_response_seconds = round(float(response_time_df["gap_seconds"].mean()), 2) if not response_time_df.empty else 0.0
     interruption_count = int(len(interruptions_df.index)) if not interruptions_df.empty else 0
     filler_total = int(filler_df["count"].sum()) if not filler_df.empty else 0
+    pace_wpm_values = pace_df["segment_wpm"].dropna() if not pace_df.empty else pd.Series(dtype=float)
 
     summary = {
         "total_segments": int(len(ordered_df.index)),
@@ -2065,7 +2301,11 @@ def build_transcript_insights(transcript_payload: Dict[str, Any]) -> Dict[str, A
         "total_silence_seconds": round(float(silence_df["gap_seconds"].sum()), 2) if not silence_df.empty else 0.0,
         "longest_silence_seconds": round(float(silence_df["gap_seconds"].max()), 2) if not silence_df.empty else 0.0,
         "avg_pause_seconds": avg_pause_seconds,
+        "pause_count_over_1s": pause_count_over_1s,
+        "pause_timing_source": "word" if not words_df.empty else "segment",
         "global_wpm": round((total_words / total_speaking_seconds) * 60, 1) if total_speaking_seconds > 0 else 0.0,
+        "min_wpm": round(float(pace_wpm_values.min()), 1) if not pace_wpm_values.empty else 0.0,
+        "max_wpm": round(float(pace_wpm_values.max()), 1) if not pace_wpm_values.empty else 0.0,
         "avg_response_seconds": avg_response_seconds,
         "interruption_count": interruption_count,
         "filler_total": filler_total,
@@ -2099,6 +2339,7 @@ def build_transcript_insights(transcript_payload: Dict[str, Any]) -> Dict[str, A
         "low_energy_df": low_energy_df,
         "burst_df": burst_df,
         "burst_distribution_df": burst_distribution_df,
+        "utterance_duration_distribution_df": utterance_duration_distribution_df,
         "topic_timeline_df": topic_timeline_df,
         "named_entities_df": named_entities_df,
         "numbers_df": numbers_df,

@@ -4,7 +4,7 @@ from livestorm_app.charts.common import PLOTLY_AVAILABLE, px, render_chart_fallb
 
 
 def render_speaker_airtime_chart(insights):
-    st.markdown("**Speaker Airtime Distribution**")
+    st.markdown("**Pie Chart Per Speaker**")
     speaker_df = insights.get("speaker_df")
     if speaker_df is None or speaker_df.empty:
         st.info("Speaker airtime is not available.")

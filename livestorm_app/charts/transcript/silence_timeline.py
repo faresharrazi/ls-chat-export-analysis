@@ -4,10 +4,10 @@ from livestorm_app.charts.common import PLOTLY_AVAILABLE, apply_default_layout, 
 
 
 def render_silence_timeline_chart(insights):
-    st.markdown("**Silence Timeline**")
+    st.markdown("**Pause Timeline**")
     silence_df = insights.get("silence_df")
     if silence_df is None or silence_df.empty:
-        st.info("No silence gaps above 0.75 seconds were detected.")
+        st.info("No pauses above 0.75 seconds were detected from word timing.")
         return
     if PLOTLY_AVAILABLE:
         fig = px.bar(
