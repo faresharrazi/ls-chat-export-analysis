@@ -1301,126 +1301,95 @@ def render_smart_recap_block(
             ("hype", "Hype", SMART_RECAP_HYPE_ICON_PATH),
             ("surprise", "Suprise Me!", SMART_RECAP_SURPRISE_ICON_PATH),
         ]
-        recap_labels = {key: label for key, label, _ in recap_items}
-        valid_recap_keys = [key for key, _, _ in recap_items]
         active_tone = str(st.session_state.get("smart_recap_active_tone") or "professional").strip().lower()
+        recap_labels = {key: label for key, label, _ in recap_items}
         if active_tone not in recap_labels:
             active_tone = "professional"
             st.session_state["smart_recap_active_tone"] = active_tone
 
-        selected_tone = st.radio(
-            "Recap Type",
-            options=valid_recap_keys,
-            index=valid_recap_keys.index(active_tone),
-            format_func=lambda key: recap_labels.get(key, key.title()),
-            horizontal=True,
-        )
-        if selected_tone != st.session_state.get("smart_recap_active_tone"):
-            st.session_state["smart_recap_active_tone"] = selected_tone
-        if SMART_RECAP_SURPRISE_ICON_PATH.exists():
-            surprise_icon_b64 = _read_file_base64(str(SMART_RECAP_SURPRISE_ICON_PATH))
-            st.markdown(
-                f"""
-                <style>
-                .st-key-smart_recap_run_btn_surprise button,
-                .st-key-smart_recap_running_btn_surprise button {{
-                    width: 250px;
-                    height: 250px;
-                    padding: 0;
-                    border: none;
-                    background: transparent url("data:image/png;base64,{surprise_icon_b64}") center center / contain no-repeat !important;
-                    color: transparent !important;
-                    box-shadow: none !important;
-                }}
-                .st-key-smart_recap_run_btn_surprise button:hover,
-                .st-key-smart_recap_run_btn_surprise button:focus,
-                .st-key-smart_recap_run_btn_surprise button:active {{
-                    border: none !important;
-                    box-shadow: none !important;
-                    transform: scale(1.01);
-                }}
-                .st-key-smart_recap_run_btn_surprise button p,
-                .st-key-smart_recap_running_btn_surprise button p {{
-                    opacity: 0 !important;
-                }}
-                </style>
-                """,
-                unsafe_allow_html=True,
-            )
         requested_tone: Optional[str] = None
         tone_in_progress = str(st.session_state.get("smart_recap_in_progress_tone") or "").strip().lower()
-        active_item = next((item for item in recap_items if item[0] == selected_tone), recap_items[0])
-        key, label, icon_path = active_item
+        ordered_recap_items = sorted(
+            recap_items,
+            key=lambda item: (0 if item[0] == active_tone else 1, recap_items.index(item)),
+        )
+        tabs = st.tabs([label for _, label, _ in ordered_recap_items])
 
-        try:
-            markdown = str(smart_recap_bundle.get(key) or "").strip()
-            is_generating_this_tone = bool(
-                st.session_state.get("smart_recap_in_progress", False)
-                and tone_in_progress == key
-            )
-            if not markdown:
-                button_col, _ = st.columns([0.26, 0.74])
-                with button_col:
-                    if is_generating_this_tone:
-                        st.button(
-                            f"Generating {label} Recap",
-                            key=f"smart_recap_running_btn_{key}",
-                            type="primary",
-                            disabled=True,
-                        )
-                    else:
-                        clicked = st.button(
-                            "Generate",
-                            key=f"smart_recap_run_btn_{key}",
-                            type="primary",
-                            disabled=not transcript_available or bool(st.session_state.get("smart_recap_in_progress", False)),
-                        )
-                        if clicked:
-                            requested_tone = key
-                if is_generating_this_tone:
-                    st.caption(f"Generating {label} Recap...")
-
-            if markdown:
-                title, description = _extract_title_and_description(markdown)
-                plain_description = _normalize_markdown_for_display(description)
-                plain_body = plain_description or _normalize_markdown_for_display(markdown)
-                pdf_title = title.strip() if title.strip() else "Smart Recap"
-                md_filename = f"livestorm-smart-recap-{label.lower()}-{current_session_id}.md"
-                pdf_filename = f"livestorm-smart-recap-{label.lower()}-{current_session_id}.pdf"
-                pdf_state_key = f"smart_recap_pdf_bytes_{current_session_id}_{key}"
-                pdf_button_key = f"smart_recap_prepare_pdf_{current_session_id}_{key}"
-
-                download_links: List[Tuple[str, bytes, str, str]] = [
-                    ("(MD)", markdown.encode("utf-8"), md_filename, "text/markdown")
-                ]
-                if title:
-                    _render_inline_download_links(title, download_links)
-                else:
-                    _render_inline_download_links(label, download_links)
-
-                prepare_pdf = st.button(
-                    "Prepare PDF",
-                    key=pdf_button_key,
-                    type="secondary",
-                )
-                if prepare_pdf and pdf_state_key not in st.session_state:
-                    pdf_source = plain_body if plain_body else _normalize_markdown_for_display(markdown)
-                    try:
-                        st.session_state[pdf_state_key] = analysis_markdown_to_pdf_bytes(pdf_source, title=pdf_title)
-                    except RuntimeError:
-                        st.info("PDF export is unavailable until `reportlab` is installed.")
-
-                pdf_bytes = st.session_state.get(pdf_state_key)
-                if isinstance(pdf_bytes, bytes) and pdf_bytes:
-                    st.download_button(
-                        "Download PDF",
-                        data=pdf_bytes,
-                        file_name=pdf_filename,
-                        mime="application/pdf",
-                        key=f"smart_recap_download_pdf_{current_session_id}_{key}",
+        for tab, (key, label, _icon_path) in zip(tabs, ordered_recap_items):
+            with tab:
+                try:
+                    markdown = str(smart_recap_bundle.get(key) or "").strip()
+                    is_generating_this_tone = bool(
+                        st.session_state.get("smart_recap_in_progress", False)
+                        and tone_in_progress == key
                     )
-                _render_readonly_text_block("", re.sub(r"^\s*Description\s*:?\s*", "", plain_body, flags=re.IGNORECASE))
-        except Exception:
-            st.error(f"{label} recap could not be displayed.")
+                    if key == "surprise" and SMART_RECAP_SURPRISE_ICON_PATH.exists():
+                        image_col, _ = st.columns([0.22, 0.78])
+                        with image_col:
+                            st.image(str(SMART_RECAP_SURPRISE_ICON_PATH), width=160)
+                    if not markdown:
+                        button_label = f"Generate {label} Recap"
+                        if is_generating_this_tone:
+                            st.button(
+                                f"Generating {label} Recap",
+                                key=f"smart_recap_running_btn_{key}",
+                                type="primary",
+                                disabled=True,
+                            )
+                            st.caption(f"Generating {label} Recap...")
+                        else:
+                            clicked = st.button(
+                                button_label,
+                                key=f"smart_recap_run_btn_{key}",
+                                type="primary",
+                                disabled=not transcript_available or bool(st.session_state.get("smart_recap_in_progress", False)),
+                            )
+                            if clicked:
+                                requested_tone = key
+                                st.session_state["smart_recap_active_tone"] = key
+                        if not transcript_available:
+                            st.caption("Transcript required.")
+
+                    if markdown:
+                        title, description = _extract_title_and_description(markdown)
+                        plain_description = _normalize_markdown_for_display(description)
+                        plain_body = plain_description or _normalize_markdown_for_display(markdown)
+                        pdf_title = title.strip() if title.strip() else "Smart Recap"
+                        md_filename = f"livestorm-smart-recap-{label.lower()}-{current_session_id}.md"
+                        pdf_filename = f"livestorm-smart-recap-{label.lower()}-{current_session_id}.pdf"
+                        pdf_state_key = f"smart_recap_pdf_bytes_{current_session_id}_{key}"
+                        pdf_button_key = f"smart_recap_prepare_pdf_{current_session_id}_{key}"
+
+                        download_links: List[Tuple[str, bytes, str, str]] = [
+                            ("(MD)", markdown.encode("utf-8"), md_filename, "text/markdown")
+                        ]
+                        _render_inline_download_links(title if title else label, download_links)
+
+                        action_col, _ = st.columns([0.22, 0.78])
+                        with action_col:
+                            prepare_pdf = st.button(
+                                "Prepare PDF",
+                                key=pdf_button_key,
+                                type="secondary",
+                            )
+                        if prepare_pdf and pdf_state_key not in st.session_state:
+                            pdf_source = plain_body if plain_body else _normalize_markdown_for_display(markdown)
+                            try:
+                                st.session_state[pdf_state_key] = analysis_markdown_to_pdf_bytes(pdf_source, title=pdf_title)
+                            except RuntimeError:
+                                st.info("PDF export is unavailable until `reportlab` is installed.")
+
+                        pdf_bytes = st.session_state.get(pdf_state_key)
+                        if isinstance(pdf_bytes, bytes) and pdf_bytes:
+                            st.download_button(
+                                "Download PDF",
+                                data=pdf_bytes,
+                                file_name=pdf_filename,
+                                mime="application/pdf",
+                                key=f"smart_recap_download_pdf_{current_session_id}_{key}",
+                            )
+                        _render_readonly_text_block("", re.sub(r"^\s*Description\s*:?\s*", "", plain_body, flags=re.IGNORECASE))
+                except Exception:
+                    st.error(f"{label} recap could not be displayed.")
 
         return requested_tone
