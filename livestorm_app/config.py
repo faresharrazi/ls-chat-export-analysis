@@ -16,7 +16,7 @@ START_PAGE_NUMBER = 0
 # OpenAI model configuration by feature.
 # Tweak these constants to change which model each workflow uses.
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
-DEEP_ANALYSIS_OPENAI_MODEL = "gpt-4o"
+DEEP_ANALYSIS_OPENAI_MODEL = "gpt-4o-mini"
 SMART_RECAP_OPENAI_MODEL = "gpt-5.4-mini"
 
 PROMPTS_DIR = Path("prompts")

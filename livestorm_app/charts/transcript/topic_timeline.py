@@ -19,6 +19,6 @@ def render_topic_timeline_chart(insights):
             color_discrete_sequence=["#8FD0DE", "#F4B942", "#F06D6D", "#5AC77A", "#B8E986"],
         )
         apply_default_layout(fig, height=320, x_title="Time (sec)", y_title="Topic", showlegend=True)
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "displaylogo": False})
+        st.plotly_chart(fig, width="stretch", config={"displayModeBar": False, "displaylogo": False})
         return
     render_chart_fallback("Install `plotly` to view charts.", topic_timeline_df, ["bucket_label", "topic", "speaker"])

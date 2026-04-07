@@ -272,15 +272,11 @@ DEEP_ANALYSIS_SECTION_ORDER: List[Tuple[str, str]] = [
     ("executive_summary", "Executive Summary"),
     ("session_scores", "Session Scores"),
     ("key_moments", "Key Moments"),
-    ("engagement_timeline", "Engagement Timeline"),
-    ("technical_session_diagnostics", "Technical Diagnostics"),
     ("speaker_and_interaction_analysis", "Speaker Dynamics"),
-    ("cognitive_load_analysis", "Cognitive Load"),
     ("audience_intent_analysis", "Audience Intent"),
     ("cross_source_synthesis", "Cross-Source Synthesis"),
     ("friction_and_risk_signals", "Friction And Risks"),
     ("business_signals_and_kpi_mentions", "Business Signals"),
-    ("replay_optimization", "Replay Optimization"),
     ("actionable_recommendations", "Recommendations"),
     ("risks_ambiguities_and_data_quality_limits", "Limits And Uncertainty"),
 ]
@@ -297,15 +293,11 @@ UI_LABELS: Dict[str, Dict[str, str]] = {
         "executive_summary": "Executive Summary",
         "session_scores": "Session Scores",
         "key_moments": "Key Moments",
-        "engagement_timeline": "Engagement Timeline",
-        "technical_session_diagnostics": "Technical Diagnostics",
         "speaker_and_interaction_analysis": "Speaker Dynamics",
-        "cognitive_load_analysis": "Cognitive Load",
         "audience_intent_analysis": "Audience Intent",
         "cross_source_synthesis": "Cross-Source Synthesis",
         "friction_and_risk_signals": "Friction And Risks",
         "business_signals_and_kpi_mentions": "Business Signals",
-        "replay_optimization": "Replay Optimization",
         "actionable_recommendations": "Recommendations",
         "risks_ambiguities_and_data_quality_limits": "Limits And Uncertainty",
     },
@@ -320,15 +312,11 @@ UI_LABELS: Dict[str, Dict[str, str]] = {
         "executive_summary": "Resume Executif",
         "session_scores": "Scores De Session",
         "key_moments": "Moments Cles",
-        "engagement_timeline": "Chronologie De L'Engagement",
-        "technical_session_diagnostics": "Diagnostic Technique",
         "speaker_and_interaction_analysis": "Dynamique Des Intervenants",
-        "cognitive_load_analysis": "Charge Cognitive",
         "audience_intent_analysis": "Intentions De L'Audience",
         "cross_source_synthesis": "Synthese Croisee",
         "friction_and_risk_signals": "Friction Et Risques",
         "business_signals_and_kpi_mentions": "Signaux Business",
-        "replay_optimization": "Optimisation Du Replay",
         "actionable_recommendations": "Recommandations",
         "risks_ambiguities_and_data_quality_limits": "Limites Et Incertitudes",
     },
@@ -348,57 +336,92 @@ def _ui_label(key: str, language: str = "English", fallback: str = "") -> str:
 def _normalize_section_key(value: str) -> str:
     normalized = re.sub(r"^\s*#+\s*", "", str(value or "").strip())
     normalized = re.sub(r"^\s*\d+[.)]\s*", "", normalized)
-    normalized = normalized.strip().strip(":")
+    normalized = re.sub(r"^\s*(?:[-*]\s+)?", "", normalized)
+    normalized = normalized.strip().strip(":").strip("*_` ")
     normalized = re.sub(r"[^a-z0-9]+", "_", normalized.lower())
     return normalized.strip("_")
+
+
+def _deep_analysis_heading_aliases(language: str = "English") -> Dict[str, List[str]]:
+    aliases = {
+        key: [_ui_label(key, language, label)]
+        for key, label in DEEP_ANALYSIS_SECTION_ORDER
+    }
+    aliases["speaker_and_interaction_analysis"].extend(
+        ["Speaker And Interaction Analysis", "Speaker Interaction Analysis", "Speaker Dynamics"]
+    )
+    aliases["friction_and_risk_signals"].extend(
+        ["Friction And Risk Signals", "Friction And Risks", "Friction Risk Signals"]
+    )
+    aliases["business_signals_and_kpi_mentions"].extend(
+        ["Business Signals And KPI Mentions", "Business Signals", "Business Signals And Kpis"]
+    )
+    aliases["risks_ambiguities_and_data_quality_limits"].extend(
+        ["Risks, Ambiguities, And Data Quality Limits", "Data Quality Limits", "Risks Ambiguities And Limits"]
+    )
+    return aliases
 
 
 def _parse_deep_analysis_sections(markdown_text: str, language: str = "English") -> List[Tuple[str, str, str]]:
     if not isinstance(markdown_text, str) or not markdown_text.strip():
         return []
 
+    normalized_text = markdown_text.replace("\r\n", "\n")
     canonical_labels = {key: _ui_label(key, language, label) for key, label in DEEP_ANALYSIS_SECTION_ORDER}
-    alias_map = {
-        "technical_diagnostics": "technical_session_diagnostics",
-        "technical_session_diagnostic": "technical_session_diagnostics",
-        "speaker_interaction_analysis": "speaker_and_interaction_analysis",
-        "speaker_and_interaction": "speaker_and_interaction_analysis",
-        "speaker_dynamics": "speaker_and_interaction_analysis",
-        "friction_and_risks": "friction_and_risk_signals",
-        "friction_risk_signals": "friction_and_risk_signals",
-        "business_signals": "business_signals_and_kpi_mentions",
-        "data_quality_limits": "risks_ambiguities_and_data_quality_limits",
-        "risks_ambiguities_and_limits": "risks_ambiguities_and_data_quality_limits",
-    }
+    heading_matches: List[Tuple[int, int, str, str]] = []
+    for section_key, alias_list in _deep_analysis_heading_aliases(language).items():
+        for alias in alias_list:
+            alias_pattern = re.escape(alias)
+            pattern = re.compile(
+                rf"(?im)^(?:\s{{0,3}}(?:#{1,6}\s*)?(?:\d+[.)]\s*)?(?:[-*]\s+)?)"
+                rf"(?:\*\*|__)?{alias_pattern}(?:\*\*|__)?"
+                rf"(?:\s*[:\-]\s*|\s+)?(.*)$"
+            )
+            for match in pattern.finditer(normalized_text):
+                heading_matches.append((match.start(), match.end(), section_key, str(match.group(1) or "").strip()))
+
+    if len(heading_matches) < 2:
+        numbered_matches: List[Tuple[int, int, str, str]] = []
+        numbered_pattern = re.compile(r"(?im)^\s*(?:#{1,6}\s*)?(\d{1,2})[.)]\s+(.+)$")
+        for match in numbered_pattern.finditer(normalized_text):
+            section_index = int(match.group(1)) - 1
+            if section_index < 0 or section_index >= len(DEEP_ANALYSIS_SECTION_ORDER):
+                continue
+            section_key = DEEP_ANALYSIS_SECTION_ORDER[section_index][0]
+            numbered_matches.append((match.start(), match.end(), section_key, ""))
+        if len(numbered_matches) >= 2:
+            heading_matches = numbered_matches
+
+    if not heading_matches:
+        return [("executive_summary", _ui_label("executive_summary", language, "Executive Summary"), normalized_text.strip())]
+
+    heading_matches.sort(key=lambda item: item[0])
+    deduped_matches: List[Tuple[int, int, str, str]] = []
+    seen_positions = set()
+    for start, end, section_key, inline_remainder in heading_matches:
+        marker = (start, end)
+        if marker in seen_positions:
+            continue
+        seen_positions.add(marker)
+        deduped_matches.append((start, end, section_key, inline_remainder))
 
     sections: List[Tuple[str, str, str]] = []
-    current_key = "overview"
-    current_label = _ui_label("overview", language, "Overview")
-    current_lines: List[str] = []
+    preamble = normalized_text[: deduped_matches[0][0]].strip()
+    if preamble:
+        sections.append(("executive_summary", _ui_label("executive_summary", language, "Executive Summary"), preamble))
 
-    def flush_current() -> None:
-        content = "\n".join(current_lines).strip()
+    for index, (start, end, section_key, inline_remainder) in enumerate(deduped_matches):
+        next_start = deduped_matches[index + 1][0] if index + 1 < len(deduped_matches) else len(normalized_text)
+        content_parts = [inline_remainder] if inline_remainder else []
+        trailing_body = normalized_text[end:next_start].strip()
+        if trailing_body:
+            content_parts.append(trailing_body)
+        content = "\n\n".join(part for part in content_parts if part).strip()
         if content:
-            sections.append((current_key, current_label, content))
-
-    for raw_line in markdown_text.replace("\r\n", "\n").splitlines():
-        line = raw_line.rstrip()
-        stripped = line.strip()
-        heading_match = re.match(r"^(?:#{1,6}\s+|\d+[.)]\s+)(.+?)\s*$", stripped)
-        if heading_match:
-            flush_current()
-            heading_text = heading_match.group(1).strip()
-            normalized_key = _normalize_section_key(heading_text)
-            normalized_key = alias_map.get(normalized_key, normalized_key)
-            current_key = normalized_key or "section"
-            current_label = canonical_labels.get(current_key, heading_text)
-            current_lines = []
-            continue
-        current_lines.append(line)
-    flush_current()
+            sections.append((section_key, canonical_labels.get(section_key, section_key), content))
 
     if not sections:
-        return [("overview", _ui_label("overview", language, "Overview"), markdown_text.strip())]
+        return [("executive_summary", _ui_label("executive_summary", language, "Executive Summary"), normalized_text.strip())]
 
     ordered: List[Tuple[str, str, str]] = []
     remaining = list(sections)
@@ -418,10 +441,39 @@ def _render_deep_analysis_sections(markdown_text: str, current_session_id: str, 
         st.markdown(markdown_text)
         return
 
-    section_tabs = st.tabs([label for _, label, _ in sections])
-    for tab, (_, _, content) in zip(section_tabs, sections):
+    section_content_map = {key: content for key, _, content in sections}
+    canonical_keys = {key for key, _label in DEEP_ANALYSIS_SECTION_ORDER}
+    ordered_sections: List[Tuple[str, str, str]] = []
+    for section_key, default_label in DEEP_ANALYSIS_SECTION_ORDER:
+        ordered_sections.append(
+            (
+                section_key,
+                _ui_label(section_key, language, default_label),
+                section_content_map.pop(section_key, ""),
+            )
+        )
+
+    extra_content_parts = [content for key, _, content in sections if key not in canonical_keys]
+    if extra_content_parts:
+        ordered_sections.append(
+            (
+                "additional_notes",
+                "Additional Notes" if language == "English" else "Notes Complementaires",
+                "\n\n".join(part for part in extra_content_parts if part.strip()).strip(),
+            )
+        )
+
+    section_tabs = st.tabs([label for _, label, _ in ordered_sections])
+    for tab, (section_key, _, content) in zip(section_tabs, ordered_sections):
         with tab:
-            st.markdown(content)
+            if content.strip():
+                st.markdown(content)
+            else:
+                fallback_label = _ui_label(section_key, language, section_key.replace("_", " ").title())
+                if language == "French":
+                    st.caption(f"Aucun contenu n'a ete retourne pour la section {fallback_label}.")
+                else:
+                    st.caption(f"No content was returned for the {fallback_label} section.")
 
 
 def render_session_overview_block(
@@ -476,7 +528,7 @@ def render_session_overview_block(
                 key=f"session_overview_json_download_{current_session_id}",
             )
             if isinstance(overview_df, pd.DataFrame) and not overview_df.empty:
-                st.dataframe(overview_df, use_container_width=True, hide_index=True)
+                st.dataframe(overview_df, width="stretch", hide_index=True)
             if isinstance(engagement_top_df, pd.DataFrame) and not engagement_top_df.empty:
                 top_people_df = engagement_top_df[
                     [
@@ -498,7 +550,7 @@ def render_session_overview_block(
                     f"livestorm-session-engagement-{current_session_id}.csv",
                     key=f"session_engagement_csv_{current_session_id}",
                 )
-                st.dataframe(top_people_df, use_container_width=True, hide_index=True)
+                st.dataframe(top_people_df, width="stretch", hide_index=True)
 
         with people_tab:
             if isinstance(people_df, pd.DataFrame) and not people_df.empty:
@@ -528,7 +580,7 @@ def render_session_overview_block(
                     f"livestorm-session-people-{current_session_id}.csv",
                     key=f"session_people_csv_{current_session_id}",
                 )
-                st.dataframe(people_export_df, use_container_width=True, hide_index=True)
+                st.dataframe(people_export_df, width="stretch", hide_index=True)
             else:
                 st.caption("No people details are available in this session payload.")
 
@@ -730,7 +782,7 @@ def render_transcript_block(
                     )
                     st.dataframe(
                         key_moments_df[["time_label", "speaker", "score", "reasons", "excerpt"]],
-                        use_container_width=True,
+                        width="stretch",
                         hide_index=True,
                     )
                 if not numbers_df.empty:
@@ -746,7 +798,7 @@ def render_transcript_block(
                     ]
                     st.dataframe(
                         numbers_df[number_columns].head(20),
-                        use_container_width=True,
+                        width="stretch",
                         hide_index=True,
                     )
                 if isinstance(segments_df, pd.DataFrame) and not segments_df.empty:
@@ -768,7 +820,7 @@ def render_transcript_block(
                             f"livestorm-segments-{current_session_id}.csv",
                             key=f"segments_csv_{current_session_id}",
                         )
-                        st.dataframe(display_segments[keep_columns], use_container_width=True, hide_index=True)
+                        st.dataframe(display_segments[keep_columns], width="stretch", hide_index=True)
                 if isinstance(sentence_df, pd.DataFrame) and not sentence_df.empty:
                     sentence_display_df = sentence_df[["start_seconds", "speaker", "word_count", "confidence", "sentence"]].head(100)
                     _render_section_download_header(
@@ -779,7 +831,7 @@ def render_transcript_block(
                     )
                     st.dataframe(
                         sentence_display_df,
-                        use_container_width=True,
+                        width="stretch",
                         hide_index=True,
                     )
 
@@ -838,7 +890,7 @@ def render_transcript_block(
                                 "share_pct": "% Contribution",
                             }
                         )[["Speaker", "Speaking Time", "% Contribution"]],
-                        use_container_width=True,
+                        width="stretch",
                         hide_index=True,
                     )
                 else:
@@ -870,7 +922,7 @@ def render_transcript_block(
                                 "avg_turn_duration_seconds": "Avg Duration Per Turn (sec)",
                             }
                         ),
-                        use_container_width=True,
+                        width="stretch",
                         hide_index=True,
                     )
                 else:
@@ -904,7 +956,7 @@ def render_transcript_block(
                     _render_chart_grid(WORD_COUNT_TRANSCRIPT_CHARTS, (transcript_insights,), columns=2)
                     st.dataframe(
                         speaker_df.rename(columns={"speaker": "Speaker", "words": "Words"})[["Speaker", "Words"]],
-                        use_container_width=True,
+                        width="stretch",
                         hide_index=True,
                     )
                 else:
@@ -973,7 +1025,7 @@ def render_chat_questions_block(
             ["Chat", "Questions", "Top Contributors", "Activity Over Time", "Question Response Coverage"]
         )
         with chat_tab:
-            st.dataframe(df, use_container_width=True)
+            st.dataframe(df, width="stretch")
             timestamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
             st.download_button(
                 label="Download Chat CSV",
@@ -983,7 +1035,7 @@ def render_chat_questions_block(
             )
         with questions_tab:
             if isinstance(questions_df, pd.DataFrame) and not questions_df.empty:
-                st.dataframe(questions_df, use_container_width=True)
+                st.dataframe(questions_df, width="stretch")
                 questions_timestamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
                 st.download_button(
                     label="Download Questions CSV",
@@ -1099,7 +1151,7 @@ def render_analysis_block(
                                     data=analysis_bytes,
                                     file_name=f"livestorm-analysis-{language.lower()}-{current_session_id}-{analysis_ts}.md",
                                     mime="text/markdown",
-                                    use_container_width=True,
+                                    width="stretch",
                                 )
                             else:
                                 try:
@@ -1109,7 +1161,7 @@ def render_analysis_block(
                                         data=pdf_bytes,
                                         file_name=f"livestorm-analysis-{language.lower()}-{current_session_id}-{analysis_ts}.pdf",
                                         mime="application/pdf",
-                                        use_container_width=True,
+                                        width="stretch",
                                     )
                                 except RuntimeError as exc:
                                     st.caption(str(exc))
@@ -1162,7 +1214,7 @@ def render_analysis_block(
                                 st.markdown("**Segments With The Most Reactions**")
                                 st.dataframe(
                                     reaction_moments_df[["session_stage", "start_label", "excerpt", "chat_messages", "question_count"]],
-                                    use_container_width=True,
+                                    width="stretch",
                                     hide_index=True,
                                 )
                         else:
@@ -1185,7 +1237,7 @@ def render_analysis_block(
                                     data=deep_analysis_bytes,
                                     file_name=f"livestorm-deep-analysis-{language.lower()}-{current_session_id}-{deep_analysis_ts}.md",
                                     mime="text/markdown",
-                                    use_container_width=True,
+                                    width="stretch",
                                 )
                             else:
                                 try:
@@ -1195,7 +1247,7 @@ def render_analysis_block(
                                         data=pdf_bytes,
                                         file_name=f"livestorm-deep-analysis-{language.lower()}-{current_session_id}-{deep_analysis_ts}.pdf",
                                         mime="application/pdf",
-                                        use_container_width=True,
+                                        width="stretch",
                                     )
                                 except RuntimeError as exc:
                                     st.caption(str(exc))

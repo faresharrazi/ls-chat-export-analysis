@@ -55,7 +55,7 @@ def render_content_pace_and_activity_chart(cross_source, chart_key: str | None =
         )
         st.plotly_chart(
             fig,
-            use_container_width=True,
+            width="stretch",
             config={"displayModeBar": False, "displaylogo": False},
             key=chart_key,
         )

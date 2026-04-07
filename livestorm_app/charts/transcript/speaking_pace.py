@@ -20,6 +20,6 @@ def render_speaking_pace_chart(insights):
         )
         fig.update_traces(line=dict(width=3), marker=dict(size=7, color="#F4B942"), line_shape="spline")
         apply_default_layout(fig, height=300, x_title="Time (sec)", y_title="WPM", showlegend=False)
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "displaylogo": False})
+        st.plotly_chart(fig, width="stretch", config={"displayModeBar": False, "displaylogo": False})
         return
     render_chart_fallback("Install `plotly` to view charts.", pace_df, ["time_label", "segment_wpm", "word_count"])

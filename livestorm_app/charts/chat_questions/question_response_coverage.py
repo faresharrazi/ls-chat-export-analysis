@@ -25,6 +25,6 @@ def render_question_response_coverage_chart(df: pd.DataFrame, questions_df: pd.D
             hover_data=["status", "count"],
         )
         apply_default_layout(fig, height=260, x_title="Status", y_title="Questions", showlegend=False)
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "displaylogo": False})
+        st.plotly_chart(fig, width="stretch", config={"displayModeBar": False, "displaylogo": False})
         return
     render_chart_fallback("Install `plotly` to view charts.", status_df, ["status", "count"])

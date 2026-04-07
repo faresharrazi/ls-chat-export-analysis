@@ -33,6 +33,6 @@ def render_top_contributors_chart(df: pd.DataFrame, questions_df: pd.DataFrame |
             hover_data=["person_id", "count", "kind"],
         )
         apply_default_layout(fig, height=300, x_title="Author / Asker ID", y_title="Count", showlegend=True)
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "displaylogo": False})
+        st.plotly_chart(fig, width="stretch", config={"displayModeBar": False, "displaylogo": False})
         return
     render_chart_fallback("Install `plotly` to view charts.", combined_top, ["person_id", "count", "kind"])

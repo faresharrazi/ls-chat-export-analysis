@@ -23,7 +23,7 @@ def render_speaker_changes_timeline_chart(insights):
         )
         fig.update_traces(marker=dict(size=11))
         apply_default_layout(fig, height=300, x_title="Time (sec)", y_title="Speaker", showlegend=True)
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "displaylogo": False})
+        st.plotly_chart(fig, width="stretch", config={"displayModeBar": False, "displaylogo": False})
         return
 
     render_chart_fallback(

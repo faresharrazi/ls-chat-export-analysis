@@ -32,7 +32,7 @@ def render_chart_fallback(message: str, data: Optional[pd.DataFrame] = None, col
             keep_columns = [column for column in columns if column in display_df.columns]
             if keep_columns:
                 display_df = display_df[keep_columns]
-        st.dataframe(display_df, use_container_width=True, hide_index=True)
+        st.dataframe(display_df, width="stretch", hide_index=True)
 
 
 def apply_default_layout(fig, *, height: int, x_title: str, y_title: str, showlegend: bool = False):
@@ -81,6 +81,6 @@ def brand_line_chart(data: pd.DataFrame, x_field: str, y_field: str, x_title: st
 
 def render_plotly_or_fallback(fig, *, fallback_df: Optional[pd.DataFrame] = None, fallback_columns: Optional[List[str]] = None) -> None:
     if fig is not None and PLOTLY_AVAILABLE:
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "displaylogo": False})
+        st.plotly_chart(fig, width="stretch", config={"displayModeBar": False, "displaylogo": False})
         return
     render_chart_fallback("Install `plotly` to view charts.", fallback_df, fallback_columns)

@@ -48,6 +48,6 @@ def render_activity_timeline_chart(df: pd.DataFrame, questions_df: pd.DataFrame 
             hover_data=["minute", "count", "kind"],
         )
         apply_default_layout(fig, height=300, x_title="Time (UTC)", y_title="Count", showlegend=True)
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "displaylogo": False})
+        st.plotly_chart(fig, width="stretch", config={"displayModeBar": False, "displaylogo": False})
         return
     render_chart_fallback("Install `plotly` to view charts.", timeline, ["minute", "count", "kind"])

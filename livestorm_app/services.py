@@ -792,7 +792,6 @@ def build_deep_analysis_prompt() -> str:
         "specific recommendations. Support conclusions with concrete evidence from the payloads."
     )
 
-
 def build_content_repurpose_prompt(content_type: str) -> str:
     prompt_map = {
         "summary": CONTENT_REPURPOSE_SUMMARY_PROMPT_PATH,
@@ -910,30 +909,39 @@ def _bundle_language_looks_wrong(bundle: Dict[str, str], output_language: str) -
     return english_score > max(french_score + 8, 12)
 
 
+def _extract_text_fragments(value: Any) -> List[str]:
+    if isinstance(value, str):
+        stripped = value.strip()
+        return [stripped] if stripped else []
+    if isinstance(value, list):
+        fragments: List[str] = []
+        for item in value:
+            fragments.extend(_extract_text_fragments(item))
+        return fragments
+    if isinstance(value, dict):
+        fragments: List[str] = []
+        for key in ("text", "output_text", "content", "value"):
+            if key in value:
+                fragments.extend(_extract_text_fragments(value.get(key)))
+        return fragments
+    return []
+
+
 def _extract_chat_completion_text(payload: Dict[str, Any]) -> str:
     choices = payload.get("choices")
     if not isinstance(choices, list) or not choices:
         return ""
     message = choices[0].get("message", {})
     content = message.get("content")
-    if isinstance(content, str):
-        return content.strip()
-    if isinstance(content, list):
-        text_parts: List[str] = []
-        for item in content:
-            if isinstance(item, str) and item.strip():
-                text_parts.append(item.strip())
-                continue
-            if isinstance(item, dict):
-                value = item.get("text") or item.get("output_text")
-                if isinstance(value, str) and value.strip():
-                    text_parts.append(value.strip())
+    text_parts = _extract_text_fragments(content)
+    if text_parts:
         return "\n".join(text_parts).strip()
-    if isinstance(content, dict):
-        for key in ("text", "output_text", "content"):
-            value = content.get(key)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
+
+    # Fall back to tool-free message fields some model variants may populate.
+    for key in ("text", "output_text"):
+        text_parts = _extract_text_fragments(message.get(key))
+        if text_parts:
+            return "\n".join(text_parts).strip()
     return ""
 
 
@@ -2785,42 +2793,98 @@ def build_derived_stats(
 
 def build_compact_transcript_payload_for_llm(transcript_payload: Dict[str, Any], max_segments: int = 120) -> Dict[str, Any]:
     transcript = _extract_transcript_object(transcript_payload)
-    segments_df = build_transcript_segments_df(transcript_payload)
-    transcript_text = build_transcript_plain_text(transcript_payload)
-    transcript_text_excerpt = transcript_text[:6000].strip()
+    segments = _extract_transcript_segments(transcript)
+    compact_segments: List[Dict[str, Any]] = []
 
+    for segment in segments[:max_segments] if max_segments > 0 else segments:
+        if not isinstance(segment, dict):
+            continue
+        text = str(segment.get("text") or "").strip()
+        if not text:
+            continue
+        compact_segment = {
+            "start": _coerce_seconds(_get_segment_start_value(segment)),
+            "end": _coerce_seconds(_get_segment_end_value(segment)),
+            "speaker": _extract_speaker_value(segment),
+            "text": text,
+        }
+        confidence = segment.get("confidence")
+        if confidence not in (None, ""):
+            compact_segment["confidence"] = confidence
+        compact_segments.append(compact_segment)
+
+    if not compact_segments:
+        sentence_items = _extract_sentence_items(transcript_payload, transcript)
+        for sentence in sentence_items[:max_segments] if max_segments > 0 else sentence_items:
+            if not isinstance(sentence, dict):
+                continue
+            text = str(sentence.get("sentence") or sentence.get("text") or "").strip()
+            if not text:
+                continue
+            compact_segment = {
+                "start": _coerce_seconds(sentence.get("start") or sentence.get("start_time")),
+                "end": _coerce_seconds(sentence.get("end") or sentence.get("end_time")),
+                "speaker": sentence.get("speaker"),
+                "text": text,
+            }
+            confidence = sentence.get("confidence")
+            if confidence not in (None, ""):
+                compact_segment["confidence"] = confidence
+            compact_segments.append(compact_segment)
+
+    speaker_values = [str(item.get("speaker") or "").strip() for item in compact_segments if str(item.get("speaker") or "").strip()]
     compact_payload: Dict[str, Any] = {
         "language": transcript.get("language"),
         "duration_seconds": transcript.get("duration_seconds"),
+        "speaker_count": len(set(speaker_values)),
+        "transcript_segments": compact_segments,
     }
-    if transcript_text_excerpt:
-        compact_payload["text_excerpt"] = transcript_text_excerpt
-        compact_payload["text_excerpt_truncated"] = len(transcript_text_excerpt) < len(transcript_text)
-
-    if not segments_df.empty:
-        compact_segments_df = segments_df.head(max_segments).copy()
-        compact_payload["segments"] = compact_segments_df[
-            [column for column in ["start_label", "speaker", "duration_seconds", "text"] if column in compact_segments_df.columns]
-        ].to_dict("records")
-
-    sentence_items = _extract_sentence_items(transcript_payload, transcript)
-    if sentence_items:
-        compact_payload["sentences"] = [
-            {
-                "start": sentence.get("start"),
-                "speaker": sentence.get("speaker"),
-                "sentence": sentence.get("sentence") or sentence.get("text"),
-            }
-            for sentence in sentence_items[:200]
-            if isinstance(sentence, dict)
-        ]
-
-    named_entities = _extract_named_entity_items(transcript_payload)
-    if named_entities:
-        compact_payload["named_entities"] = named_entities[:100]
-
     return compact_payload
 
+
+def build_deep_analysis_chat_payload_for_llm(chat_payload: Dict[str, Any], max_rows: int = 0) -> Dict[str, Any]:
+    messages = extract_messages(chat_payload)
+    events: List[Dict[str, Any]] = []
+    effective_messages = messages[:max_rows] if max_rows and max_rows > 0 else messages
+    for message in effective_messages:
+        flattened = clean_table_headers(pd.DataFrame([flatten_message(message)])).to_dict("records")[0]
+        text = str(flattened.get("text_content") or "").strip()
+        if not text:
+            continue
+        events.append(
+            {
+                "created_at": flattened.get("created_at"),
+                "author_id": flattened.get("author_id"),
+                "from_team_member": flattened.get("from_team_member"),
+                "from_guest_speaker": flattened.get("from_guest_speaker"),
+                "text_content": text,
+            }
+        )
+    return {"chat_events": events}
+
+
+def build_deep_analysis_questions_payload_for_llm(questions_payload: Dict[str, Any], max_rows: int = 0) -> Dict[str, Any]:
+    people_lookup = extract_included_people(questions_payload)
+    questions = extract_questions(questions_payload)
+    events: List[Dict[str, Any]] = []
+    effective_questions = questions[:max_rows] if max_rows and max_rows > 0 else questions
+    for question in effective_questions:
+        flattened = clean_table_headers(pd.DataFrame([flatten_question(question, people_lookup)])).to_dict("records")[0]
+        question_text = str(flattened.get("question") or "").strip()
+        if not question_text:
+            continue
+        event: Dict[str, Any] = {
+            "created_at": flattened.get("created_at"),
+            "question": question_text,
+            "responded_at": flattened.get("responded_at"),
+            "responded_orally": flattened.get("responded_orally"),
+            "question_author_id": flattened.get("question_author_id"),
+        }
+        response = str(flattened.get("response") or "").strip()
+        if response:
+            event["response"] = response
+        events.append(event)
+    return {"question_events": events}
 
 def build_compact_chat_payload_for_llm(chat_df: pd.DataFrame, max_rows: int = 150) -> Dict[str, Any]:
     columns = [column for column in ["created_at", "author_id", "text_content"] if column in chat_df.columns]
@@ -2922,37 +2986,5 @@ def analyze_with_openai(
     )
     resp.raise_for_status()
     payload = resp.json()
-    choices = payload.get("choices")
-    if not isinstance(choices, list) or not choices:
-        return "No analysis returned by model."
-    message = choices[0].get("message", {})
-    content = message.get("content")
-    if isinstance(content, str):
-        return content.strip()
-    if isinstance(content, list):
-        text_parts: List[str] = []
-        for item in content:
-            if isinstance(item, str):
-                stripped = item.strip()
-                if stripped:
-                    text_parts.append(stripped)
-                continue
-            if not isinstance(item, dict):
-                continue
-            item_type = str(item.get("type") or "").strip().lower()
-            if item_type in {"text", "output_text"}:
-                text_value = item.get("text")
-                if isinstance(text_value, str) and text_value.strip():
-                    text_parts.append(text_value.strip())
-                    continue
-                nested_text = item.get("output_text")
-                if isinstance(nested_text, str) and nested_text.strip():
-                    text_parts.append(nested_text.strip())
-        if text_parts:
-            return "\n\n".join(text_parts).strip()
-    if isinstance(content, dict):
-        for key in ("text", "output_text", "content"):
-            value = content.get(key)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-    return "No analysis text returned by model."
+    extracted_text = _extract_chat_completion_text(payload)
+    return extracted_text if extracted_text else "No analysis text returned by model."

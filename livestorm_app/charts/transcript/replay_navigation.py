@@ -20,6 +20,6 @@ def render_replay_navigation_chart(insights):
             color_discrete_map={"Key moment": "#F4B942", "Low energy": "#F06D6D", "Steady": "#8FD0DE"},
         )
         apply_default_layout(fig, height=320, x_title="Time (sec)", y_title="Replay marker", showlegend=True)
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "displaylogo": False})
+        st.plotly_chart(fig, width="stretch", config={"displayModeBar": False, "displaylogo": False})
         return
     render_chart_fallback("Install `plotly` to view charts.", replay_navigation_df, ["bucket_label", "topic", "dominant_speaker", "engagement_score", "pause_seconds", "highlight"])

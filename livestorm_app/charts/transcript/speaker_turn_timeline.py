@@ -42,6 +42,6 @@ def render_speaker_turn_timeline_chart(insights):
         )
         fig.update_xaxes(gridcolor="#2F4B53", zerolinecolor="#2F4B53")
         fig.update_yaxes(gridcolor="#2F4B53", zerolinecolor="#2F4B53")
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "displaylogo": False})
+        st.plotly_chart(fig, width="stretch", config={"displayModeBar": False, "displaylogo": False})
         return
     render_chart_fallback("Speaker turns are available in table form below.", speaker_turns_df, ["speaker", "start_label", "duration_seconds", "excerpt"])

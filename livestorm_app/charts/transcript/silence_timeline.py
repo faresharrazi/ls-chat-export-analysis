@@ -23,6 +23,6 @@ def render_silence_timeline_chart(insights):
             hover_data=["silence_start_label", "silence_end_label", "speaker_transition"],
         )
         apply_default_layout(fig, height=300, x_title="Time (sec)", y_title="Pause duration (sec)", showlegend=True)
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "displaylogo": False})
+        st.plotly_chart(fig, width="stretch", config={"displayModeBar": False, "displaylogo": False})
         return
     render_chart_fallback("Install `plotly` to view charts.", silence_df, ["silence_start_label", "gap_seconds", "pause_type"])

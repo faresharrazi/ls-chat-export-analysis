@@ -159,45 +159,77 @@ def build_compact_session_payload_for_llm(session_payload: Dict[str, Any], max_p
     attributes = extract_session_attributes(session_payload)
     compact_payload: Dict[str, Any] = {
         "session": {
-            "id": str(extract_session_resource(session_payload).get("id") or "").strip(),
+            "session_id": str(extract_session_resource(session_payload).get("id") or "").strip(),
             "event_id": attributes.get("event_id"),
             "status": attributes.get("status"),
             "timezone": attributes.get("timezone"),
-            "name": attributes.get("name"),
-            "attendees_count": attributes.get("attendees_count"),
             "registrants_count": attributes.get("registrants_count"),
-            "duration_seconds": attributes.get("duration"),
+            "attendees_count": attributes.get("attendees_count"),
+            "estimated_started_at": attributes.get("estimated_started_at"),
             "started_at": attributes.get("started_at"),
             "ended_at": attributes.get("ended_at"),
+            "duration": attributes.get("duration"),
         },
-        "stats": build_session_stats(session_payload),
     }
 
     people_df = build_session_people_df(session_payload)
     if not people_df.empty:
-        compact_people_df = people_df.sort_values(
-            by=["engagement_score", "attendance_duration", "messages_count"],
-            ascending=[False, False, False],
-        ).head(max_people)
-        compact_payload["people"] = compact_people_df[
-            [
+        attended_df = people_df.loc[people_df["attended"].fillna(False).astype(bool)].copy()
+        compact_payload["participant_summary"] = {
+            "countries": (
+                people_df["ip_country_code"]
+                .fillna("")
+                .astype(str)
+                .str.strip()
+                .replace("", pd.NA)
+                .dropna()
+                .value_counts()
+                .head(12)
+                .to_dict()
+            ),
+            "roles": (
+                people_df["role"]
+                .fillna("unknown")
+                .astype(str)
+                .value_counts()
+                .to_dict()
+            ),
+            "avg_attendance_rate": (
+                round(float(attended_df["attendance_rate"].dropna().mean()), 2)
+                if not attended_df.empty and attended_df["attendance_rate"].dropna().any()
+                else None
+            ),
+            "avg_attendance_duration": (
+                round(float(attended_df["attendance_duration"].dropna().mean()), 2)
+                if not attended_df.empty and attended_df["attendance_duration"].dropna().any()
+                else None
+            ),
+            "replay_viewers": int(people_df["has_viewed_replay"].fillna(False).astype(bool).sum()),
+            "top_chatters": people_df.sort_values(
+                by=["messages_count", "questions_count", "up_votes_count", "attendance_duration"],
+                ascending=[False, False, False, False],
+            )
+            .head(max_people)
+            .loc[:, [
                 column for column in [
                     "full_name",
                     "role",
-                    "company",
-                    "job_title",
                     "attended",
-                    "attendance_rate",
                     "attendance_duration",
+                    "attendance_rate",
                     "has_viewed_replay",
-                    "ip_country_name",
                     "messages_count",
                     "questions_count",
                     "up_votes_count",
-                    "engagement_score",
-                ] if column in compact_people_df.columns
-            ]
-        ].to_dict("records")
+                    "ip_country_code",
+                    "browser_name",
+                    "os_name",
+                    "job_title",
+                    "company",
+                ] if column in people_df.columns
+            ]]
+            .to_dict("records"),
+        }
     return compact_payload
 
 

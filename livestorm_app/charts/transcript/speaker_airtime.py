@@ -24,6 +24,6 @@ def render_speaker_airtime_chart(insights):
             plot_bgcolor="rgba(0,0,0,0)",
             font=dict(color="#EAF1F3"),
         )
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False, "displaylogo": False})
+        st.plotly_chart(fig, width="stretch", config={"displayModeBar": False, "displaylogo": False})
         return
     render_chart_fallback("Install `plotly` to view charts.", speaker_df, ["speaker", "share_pct", "speaking_label", "words"])

@@ -42,7 +42,10 @@ from livestorm_app.services import (
     build_smart_recap_prompt,
     build_compact_chat_payload_for_llm,
     build_compact_questions_payload_for_llm,
+    build_compact_transcript_payload_for_llm,
+    build_deep_analysis_chat_payload_for_llm,
     build_deep_analysis_prompt,
+    build_deep_analysis_questions_payload_for_llm,
     build_derived_stats,
     build_questions_df_from_payload,
     build_transcript_plain_text,
@@ -77,6 +80,7 @@ from livestorm_app.state import (
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+DEEP_ANALYSIS_FALLBACK_MODEL = "gpt-4o"
 job_manager = get_background_job_manager()
 
 TRANSCRIPT_POLL_INTERVAL_SECONDS = 1
@@ -1244,6 +1248,7 @@ if st.session_state.get("deep_analysis_in_progress", False):
     deep_analysis_bundle = _normalize_text_bundle(st.session_state.get("deep_analysis_bundle", {}), st.session_state.get("deep_analysis_md", ""))
     source_language, source_deep_analysis_md = _get_alternate_language_text(deep_analysis_bundle, selected_output_language)
 
+    deep_analysis_request_failed = False
     try:
         if source_deep_analysis_md:
             deep_analysis_md = translate_markdown_with_openai(
@@ -1262,28 +1267,69 @@ if st.session_state.get("deep_analysis_in_progress", False):
                 transcript_payload=transcript_payload,
                 session_payload=session_payload if isinstance(session_payload, dict) else None,
             )
+            deep_analysis_kwargs = {
+                "api_key": api_analysis_key,
+                "system_prompt": prompt_text,
+                "output_language": OUTPUT_LANGUAGE_MAP.get(selected_output_language, selected_output_language),
+                "selected_sources": ["session", "chat", "questions", "transcript"],
+                "derived_stats": derived_stats,
+                "raw_payload": build_deep_analysis_chat_payload_for_llm(payload, max_rows=0),
+                "questions_payload": build_deep_analysis_questions_payload_for_llm(questions_payload, max_rows=0),
+                "transcript_payload": build_compact_transcript_payload_for_llm(transcript_payload, max_segments=0),
+                "session_payload": build_compact_session_payload_for_llm(session_payload) if isinstance(session_payload, dict) else None,
+                "max_tokens": 5000,
+            }
+            deep_analysis_model_used = DEEP_ANALYSIS_OPENAI_MODEL
             deep_analysis_md = analyze_with_openai(
-                api_key=api_analysis_key,
-                model=DEEP_ANALYSIS_OPENAI_MODEL,
-                system_prompt=prompt_text,
-                output_language=OUTPUT_LANGUAGE_MAP.get(selected_output_language, selected_output_language),
-                selected_sources=["chat", "questions", "transcript"],
-                derived_stats=derived_stats,
-                raw_payload=build_compact_chat_payload_for_llm(df, max_rows=80),
-                questions_payload=build_compact_questions_payload_for_llm(questions_df, max_rows=40),
-                transcript_payload=transcript_payload,
-                session_payload=build_compact_session_payload_for_llm(session_payload) if isinstance(session_payload, dict) else None,
-                max_tokens=2200,
+                model=deep_analysis_model_used,
+                **deep_analysis_kwargs,
             )
+            if not str(deep_analysis_md or "").strip() or str(deep_analysis_md or "").strip() in {
+                "No analysis returned by model.",
+                "No analysis text returned by model.",
+            }:
+                fallback_model = DEEP_ANALYSIS_FALLBACK_MODEL
+                if fallback_model != deep_analysis_model_used:
+                    logger.warning(
+                        "Deep analysis returned empty output with %s, retrying with %s",
+                        deep_analysis_model_used,
+                        fallback_model,
+                    )
+                    deep_analysis_model_used = fallback_model
+                    deep_analysis_md = analyze_with_openai(
+                        model=deep_analysis_model_used,
+                        **deep_analysis_kwargs,
+                    )
+            st.session_state["deep_analysis_model_used"] = deep_analysis_model_used
     except requests.HTTPError as exc:
         logger.exception("Deep analysis request failed")
         set_api_error_details("Deep analysis", build_http_error_debug_details(exc, "Deep analysis"))
         set_api_error_message(format_generic_http_error(exc, "Deep analysis"))
         deep_analysis_md = ""
+        deep_analysis_request_failed = True
     except requests.RequestException as exc:
         logger.exception("Deep analysis network error")
         set_api_error_details("Deep analysis", build_request_exception_debug_details(exc, "Deep analysis"))
         set_api_error_message(f"Deep analysis network error: {exc}")
+        deep_analysis_md = ""
+        deep_analysis_request_failed = True
+
+    deep_analysis_text = str(deep_analysis_md or "").strip()
+    if (not deep_analysis_request_failed) and (
+        not deep_analysis_text or deep_analysis_text in {
+        "No analysis returned by model.",
+        "No analysis text returned by model.",
+    }):
+        set_api_error_details(
+            "Deep analysis",
+            {
+                "resource": "Deep analysis",
+                "reason": "empty_or_unusable_model_output",
+                "model": str(st.session_state.get("deep_analysis_model_used") or DEEP_ANALYSIS_OPENAI_MODEL),
+                "selected_language": selected_output_language,
+            },
+        )
+        set_api_error_message("Deep analysis finished without usable markdown output.")
         deep_analysis_md = ""
 
     deep_analysis_bundle = _normalize_text_bundle(st.session_state.get("deep_analysis_bundle", {}), st.session_state.get("deep_analysis_md", ""))
