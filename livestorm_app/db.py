@@ -89,7 +89,31 @@ def ensure_database_schema() -> None:
             )
             cursor.execute(
                 """
+                DELETE FROM session_cache
+                WHERE ctid IN (
+                    SELECT ctid
+                    FROM (
+                        SELECT
+                            ctid,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY session_id
+                                ORDER BY updated_at DESC, created_at DESC
+                            ) AS row_rank
+                        FROM session_cache
+                    ) ranked_rows
+                    WHERE row_rank > 1
+                )
+                """
+            )
+            cursor.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_session_cache_session_id
+                ON session_cache (session_id)
+                """
+            )
+            cursor.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_session_cache_session_id_unique
                 ON session_cache (session_id)
                 """
             )
@@ -152,15 +176,19 @@ def upsert_cached_session(api_key: str, session_id: str, **fields: Any) -> None:
 
     session_id_value = str(session_id).strip()
     account_key_hash = build_account_key_hash(api_key)
-    update_clauses = ["account_key_hash = %s"]
-    update_values = [account_key_hash]
+    columns = ["account_key_hash", "session_id", *persisted_fields.keys()]
+    placeholders = ["%s", "%s"]
+    insert_values = [account_key_hash, session_id_value]
+    update_clauses = ["account_key_hash = EXCLUDED.account_key_hash"]
 
     for key, value in persisted_fields.items():
-        update_clauses.append(f"{key} = %s")
         if isinstance(value, (dict, list)):
-            update_values.append(json.dumps(value, ensure_ascii=False))
+            insert_values.append(json.dumps(value, ensure_ascii=False))
+            placeholders.append("%s::jsonb")
         else:
-            update_values.append(value)
+            insert_values.append(value)
+            placeholders.append("%s")
+        update_clauses.append(f"{key} = EXCLUDED.{key}")
 
     update_clauses.append("updated_at = NOW()")
 
@@ -168,28 +196,11 @@ def upsert_cached_session(api_key: str, session_id: str, **fields: Any) -> None:
         with connection.cursor() as cursor:
             cursor.execute(
                 f"""
-                UPDATE session_cache
-                SET {", ".join(update_clauses)}
-                WHERE session_id = %s
+                INSERT INTO session_cache ({", ".join(columns)})
+                VALUES ({", ".join(placeholders)})
+                ON CONFLICT (session_id)
+                DO UPDATE SET {", ".join(update_clauses)}
                 """,
-                [*update_values, session_id_value],
+                insert_values,
             )
-            if cursor.rowcount == 0:
-                columns = ["account_key_hash", "session_id", *persisted_fields.keys()]
-                placeholders = ["%s", "%s"]
-                insert_values = [account_key_hash, session_id_value]
-                for value in persisted_fields.values():
-                    if isinstance(value, (dict, list)):
-                        insert_values.append(json.dumps(value, ensure_ascii=False))
-                        placeholders.append("%s::jsonb")
-                    else:
-                        insert_values.append(value)
-                        placeholders.append("%s")
-                cursor.execute(
-                    f"""
-                    INSERT INTO session_cache ({", ".join(columns)})
-                    VALUES ({", ".join(placeholders)})
-                    """,
-                    insert_values,
-                )
         connection.commit()
