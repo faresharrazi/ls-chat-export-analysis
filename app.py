@@ -1,1523 +1,289 @@
+from __future__ import annotations
+
 import logging
-import os
-import time
-from datetime import datetime
-from typing import Any, Dict, List
+from pathlib import Path
+from typing import Any, Dict, Optional
 
-import pandas as pd
-import requests
-import streamlit as st
+from fastapi import FastAPI, HTTPException, Query, Response
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
-from livestorm_app.background_jobs import get_background_job_manager
-from livestorm_app.config import (
-    DEFAULT_OPENAI_MODEL,
-    DEEP_ANALYSIS_OPENAI_MODEL,
-    INPUT_MODE_OPTIONS,
-    OUTPUT_LANGUAGE_MAP,
-    SMART_RECAP_OPENAI_MODEL,
-    apply_brand_styles,
-    configure_page,
-    get_runtime_secret,
-    render_header,
+from livestorm_app.api_logic import (
+    build_analysis_pdf,
+    build_content_repurposing_pdf,
+    build_smart_recap_pdf,
+    fetch_all_session_data,
+    fetch_session_base_data,
+    fetch_session_transcript_data,
+    fetch_event_sessions,
+    format_service_error,
+    get_cached_workspace,
+    run_content_repurposing,
+    run_deep_analysis,
+    run_overall_analysis,
+    run_smart_recap,
+    save_speaker_labels,
 )
-from livestorm_app.db import (
-    database_enabled,
-    ensure_database_schema,
-    fetch_cached_session,
-    upsert_cached_session,
-)
-from livestorm_app.renderers import (
-    render_analysis_block,
-    render_chat_questions_block,
-    render_content_repurpose_block,
-    render_session_overview_block,
-    render_smart_recap_block,
-    render_transcript_block,
-)
-from livestorm_app.session_overview import build_compact_session_payload_for_llm
-from livestorm_app.services import (
-    analyze_with_openai,
-    build_analysis_prompt,
-    build_chat_df_from_payload,
-    build_smart_recap_prompt,
-    build_compact_chat_payload_for_llm,
-    build_compact_questions_payload_for_llm,
-    build_compact_transcript_payload_for_llm,
-    build_deep_analysis_chat_payload_for_llm,
-    build_deep_analysis_prompt,
-    build_deep_analysis_questions_payload_for_llm,
-    build_derived_stats,
-    build_questions_df_from_payload,
-    build_transcript_plain_text,
-    build_transcript_job_debug_details,
-    build_event_session_options,
-    build_http_error_debug_details,
-    build_request_exception_debug_details,
-    create_transcript_job,
-    fetch_chat_and_questions_bundle,
-    fetch_event_past_sessions,
-    fetch_session_details,
-    get_transcript_job,
-    generate_content_repurpose_bundle_with_openai,
-    format_generic_http_error,
-    format_livestorm_http_error,
-    mark_analysis_source_defaults,
-    build_transcript_display_text,
-    translate_content_repurpose_bundle_with_openai,
-    translate_markdown_with_openai,
-)
-from livestorm_app.state import (
-    EVENT_ID_PATTERN,
-    SESSION_ID_PATTERN,
-    clear_analysis_output,
-    get_active_session_id,
-    init_session_state,
-    reset_chat_question_state,
-    reset_session_overview_state,
-    reset_transcript_state,
-)
+from livestorm_app.config import ENV_PATH, get_runtime_secret, load_env_file
+from livestorm_app.db import ensure_database_schema
 
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-DEEP_ANALYSIS_FALLBACK_MODEL = "gpt-4o"
-job_manager = get_background_job_manager()
 
-TRANSCRIPT_POLL_INTERVAL_SECONDS = 1
-NAVIGATION_VIEWS = [
-    ("session-overview", "Session Overview"),
-    ("transcript", "Transcript"),
-    ("chat-questions", "Chat & Questions"),
-    ("analysis", "Analysis"),
-    ("smart-recap", "Smart Recap"),
-    ("content-repurposing", "Repurposing"),
-]
+BASE_DIR = Path(__file__).resolve().parent
+FRONTEND_DIST_DIR = BASE_DIR / "frontend" / "dist"
+BRAND_ASSETS_DIR = BASE_DIR / "assets"
 
 
-def build_transcript_request_signature(session_id: str) -> str:
-    return str(session_id).strip()
+class EventSessionsRequest(BaseModel):
+    api_key: str = Field(..., alias="apiKey")
+    event_id: str = Field(..., alias="eventId")
 
 
-def build_session_request_signature(session_id: str) -> str:
-    return str(session_id).strip()
+class FetchSessionRequest(BaseModel):
+    api_key: str = Field(..., alias="apiKey")
+    transcript_api_key: Optional[str] = Field("", alias="transcriptApiKey")
+    force_refresh: bool = Field(False, alias="forceRefresh")
 
 
-def set_api_error_details(resource_label: str, details: dict | None) -> None:
-    st.session_state["last_api_error_details"] = {
-        "resource": resource_label,
-        **(details or {}),
-    } if details is not None else {"resource": resource_label}
+class SpeakerLabelsRequest(BaseModel):
+    api_key: str = Field(..., alias="apiKey")
+    speaker_names: Dict[str, str] = Field(default_factory=dict, alias="speakerNames")
 
 
-def set_api_error_message(message: str) -> None:
-    st.session_state["last_api_error_message"] = message
+class AnalysisRequest(BaseModel):
+    api_key: str = Field(..., alias="apiKey")
+    output_language: str = Field("English", alias="outputLanguage")
 
 
-def clear_api_error_details() -> None:
-    st.session_state["last_api_error_details"] = None
-    st.session_state["last_api_error_message"] = ""
+class SmartRecapRequest(BaseModel):
+    api_key: str = Field(..., alias="apiKey")
+    tone: str
 
 
-def get_current_view_slug() -> str:
-    default_view = NAVIGATION_VIEWS[0][0]
-    raw_value = str(st.query_params.get("view", default_view) or default_view).strip().lower()
-    valid_views = {slug for slug, _ in NAVIGATION_VIEWS}
-    return raw_value if raw_value in valid_views else default_view
-
-
-def set_current_view_slug(view_slug: str) -> None:
-    st.query_params["view"] = str(view_slug or NAVIGATION_VIEWS[0][0]).strip().lower()
-
-
-def render_api_error_details() -> None:
-    error_message = st.session_state.get("last_api_error_message", "")
-    if error_message:
-        st.error(error_message)
-    details = st.session_state.get("last_api_error_details")
-    if isinstance(details, dict) and details:
-        with st.expander("Error details"):
-            st.json(details)
-
-
-def clear_background_notice() -> None:
-    st.session_state["background_job_notice"] = ""
-
-
-def set_background_notice(message: str) -> None:
-    st.session_state["background_job_notice"] = message
-
-
-def build_failed_job_result(message: str, *, details: Dict[str, Any] | None = None) -> Dict[str, Any]:
-    return {"ok": False, "message": message, "details": details or {}}
-
-
-def build_content_repurpose_md(bundle_by_language: Dict[str, Dict[str, str]]) -> str:
-    if not isinstance(bundle_by_language, dict):
-        return ""
-    return "\n\n---\n\n".join(
-        markdown.strip()
-        for bundle in bundle_by_language.values()
-        if isinstance(bundle, dict)
-        for markdown in bundle.values()
-        if isinstance(markdown, str) and markdown.strip()
+def _raise_http_error(resource_label: str, exc: Exception, status_code: int = 400) -> None:
+    error_payload = format_service_error(exc, resource_label)
+    raise HTTPException(
+        status_code=status_code,
+        detail={
+            "resource": resource_label,
+            "message": error_payload["message"],
+            "details": error_payload["details"],
+        },
     )
 
 
-def _normalize_text_bundle(raw_bundle: Any, fallback_text: str = "", fallback_language: str = "English") -> Dict[str, str]:
-    bundle = raw_bundle if isinstance(raw_bundle, dict) else {}
-    normalized = {
-        str(language): str(value).strip()
-        for language, value in bundle.items()
-        if isinstance(language, str) and isinstance(value, str) and str(value).strip()
-    }
-    fallback_text = str(fallback_text or "").strip()
-    if fallback_text and fallback_language not in normalized:
-        normalized[fallback_language] = fallback_text
-    return normalized
-
-
-def _get_alternate_language_text(bundle: Any, target_language: str) -> tuple[str, str]:
-    if not isinstance(bundle, dict):
-        return "", ""
-    for language, value in bundle.items():
-        if str(language) == str(target_language):
-            continue
-        text = str(value or "").strip()
-        if text:
-            return str(language), text
-    return "", ""
-
-
-def _get_alternate_language_bundle(bundle_by_language: Any, target_language: str) -> tuple[str, Dict[str, str]]:
-    if not isinstance(bundle_by_language, dict):
-        return "", {}
-    for language, bundle in bundle_by_language.items():
-        if str(language) == str(target_language) or not isinstance(bundle, dict):
-            continue
-        normalized_bundle = {
-            key: str(value or "").strip()
-            for key, value in bundle.items()
-            if key in {"summary", "blog", "email", "social_media"}
-        }
-        if any(normalized_bundle.values()):
-            return str(language), normalized_bundle
-    return "", {}
-
-
-def _normalize_smart_recap_bundle(raw_bundle: Any) -> Dict[str, str]:
-    if not isinstance(raw_bundle, dict):
-        return {}
-    allowed_tones = {"professional", "hype", "surprise"}
-    return {
-        str(tone): str(markdown).strip()
-        for tone, markdown in raw_bundle.items()
-        if str(tone) in allowed_tones and isinstance(markdown, str) and str(markdown).strip()
-    }
-
-
-def load_cached_session_into_state(api_key: str, session_id: str, cached_session: Dict[str, Any]) -> None:
-    if not isinstance(cached_session, dict):
-        return
-
-    clear_api_error_details()
-    clear_background_notice()
-    st.session_state["current_session_id"] = str(session_id or "")
-
-    session_payload = cached_session.get("session_payload")
-    chat_payload = cached_session.get("chat_payload")
-    questions_payload = cached_session.get("questions_payload")
-    transcript_payload = cached_session.get("transcript_payload")
-    transcript_speaker_names = cached_session.get("transcript_speaker_names")
-    analysis_bundle = _normalize_text_bundle(cached_session.get("analysis_bundle"), str(cached_session.get("analysis_md") or ""))
-    deep_analysis_bundle = _normalize_text_bundle(cached_session.get("deep_analysis_bundle"), str(cached_session.get("deep_analysis_md") or ""))
-    content_repurpose_bundle = cached_session.get("content_repurpose_bundle")
-    smart_recap_bundle = _normalize_smart_recap_bundle(cached_session.get("smart_recap_bundle"))
-    selected_analysis_language = str(st.session_state.get("analysis_language", "English"))
-
-    if isinstance(session_payload, dict):
-        st.session_state["session_payload"] = session_payload
-        st.session_state["last_fetched_session_overview_id"] = build_session_request_signature(str(session_id or ""))
-    if isinstance(chat_payload, dict):
-        st.session_state["chat_payload"] = chat_payload
-        st.session_state["chat_df"] = build_chat_df_from_payload(chat_payload)
-        st.session_state["last_fetched_chat_session_id"] = str(session_id or "")
-        mark_analysis_source_defaults(st.session_state, include_chat=True)
-    if isinstance(questions_payload, dict):
-        st.session_state["questions_payload"] = questions_payload
-        st.session_state["questions_df"] = build_questions_df_from_payload(questions_payload)
-        if isinstance(st.session_state.get("questions_df"), pd.DataFrame):
-            mark_analysis_source_defaults(st.session_state, include_questions=True)
-
-    if isinstance(transcript_payload, dict):
-        transcript_text = build_transcript_display_text(transcript_payload)
-        st.session_state["transcript_payload"] = transcript_payload
-        st.session_state["transcript_text"] = transcript_text
-        st.session_state["last_fetched_transcript_signature"] = build_transcript_request_signature(str(session_id or ""))
-        mark_analysis_source_defaults(st.session_state, include_transcript=True)
-        st.session_state["analysis_include_transcript_pending"] = True
-    if isinstance(transcript_speaker_names, dict):
-        all_speaker_names = st.session_state.get("transcript_speaker_names", {})
-        if not isinstance(all_speaker_names, dict):
-            all_speaker_names = {}
-        all_speaker_names[str(session_id or "")] = {
-            str(speaker): str(label).strip()
-            for speaker, label in transcript_speaker_names.items()
-            if str(label).strip()
-        }
-        st.session_state["transcript_speaker_names"] = all_speaker_names
-
-    st.session_state["analysis_bundle"] = analysis_bundle
-    st.session_state["analysis_md"] = str(analysis_bundle.get(selected_analysis_language) or "")
-    st.session_state["analysis_ran"] = bool(st.session_state["analysis_md"].strip())
-    st.session_state["deep_analysis_bundle"] = deep_analysis_bundle
-    st.session_state["deep_analysis_md"] = str(deep_analysis_bundle.get(selected_analysis_language) or "")
-    st.session_state["deep_analysis_ran"] = bool(st.session_state["deep_analysis_md"].strip())
-
-    if isinstance(content_repurpose_bundle, dict):
-        st.session_state["content_repurpose_bundle"] = content_repurpose_bundle
-        st.session_state["content_repurpose_md"] = build_content_repurpose_md(content_repurpose_bundle)
-        st.session_state["content_repurpose_ran"] = bool(st.session_state["content_repurpose_md"].strip())
-
-    if smart_recap_bundle:
-        st.session_state["smart_recap_bundle"] = smart_recap_bundle
-        st.session_state["smart_recap_ran"] = bool(
-            any(isinstance(value, str) and value.strip() for value in smart_recap_bundle.values())
-        )
-
-
-def persist_cached_session_safely(api_key: str, session_id: str, **fields: Any) -> None:
-    try:
-        upsert_cached_session(api_key, session_id, **fields)
-    except Exception:
-        logger.exception("Failed to persist cached session data", extra={"session_id": session_id, "field_names": list(fields.keys())})
-
-
-def persist_speaker_labels_for_session(api_key: str, session_id: str, speaker_names: Dict[str, str]) -> None:
-    normalized_map = {
-        str(speaker): str(label).strip()
-        for speaker, label in (speaker_names or {}).items()
-        if str(label).strip()
-    }
-    persist_cached_session_safely(
-        api_key,
-        session_id,
-        transcript_speaker_names=normalized_map,
-    )
-
-
-def refresh_fetch_cycle_state() -> None:
-    has_session_job = bool(str(st.session_state.get("session_fetch_job_id") or "").strip())
-    has_chat_job = bool(str(st.session_state.get("chat_fetch_job_id") or "").strip())
-    has_transcript_job = bool(str(st.session_state.get("transcript_job_id") or "").strip())
-    st.session_state["fetch_data_in_progress"] = has_session_job or has_chat_job or has_transcript_job
-
-
-def run_chat_questions_job(api_key: str, session_id: str) -> Dict[str, Any]:
-    try:
-        bundle = fetch_chat_and_questions_bundle(api_key, session_id)
-        return {"ok": True, "session_id": session_id, **bundle}
-    except requests.HTTPError as exc:
-        logger.exception("Chat/questions background fetch failed", extra={"session_id": session_id})
-        return build_failed_job_result(
-            format_livestorm_http_error(exc, "Chat & Questions"),
-            details=build_http_error_debug_details(exc, "Chat & Questions"),
-        )
-    except requests.RequestException as exc:
-        logger.exception("Chat/questions background network error", extra={"session_id": session_id})
-        return build_failed_job_result(
-            f"Chat & Questions network error: {exc}",
-            details=build_request_exception_debug_details(exc, "Chat & Questions"),
-        )
-
-
-def run_session_overview_job(api_key: str, session_id: str) -> Dict[str, Any]:
-    try:
-        session_payload = fetch_session_details(api_key, session_id)
-        return {"ok": True, "session_id": session_id, "session_payload": session_payload}
-    except requests.HTTPError as exc:
-        logger.exception("Session overview background fetch failed", extra={"session_id": session_id})
-        return build_failed_job_result(
-            format_livestorm_http_error(exc, "Session overview"),
-            details=build_http_error_debug_details(exc, "Session overview"),
-        )
-    except requests.RequestException as exc:
-        logger.exception("Session overview background network error", extra={"session_id": session_id})
-        return build_failed_job_result(
-            f"Session overview network error: {exc}",
-            details=build_request_exception_debug_details(exc, "Session overview"),
-        )
-
-
-def run_smart_recap_job(
-    api_key: str,
-    tone: str,
-    transcript_text: str,
-) -> Dict[str, Any]:
-    started_at = time.perf_counter()
-    try:
-        prompt_text = build_smart_recap_prompt(tone)
-        markdown = analyze_with_openai(
-            api_key=api_key,
-            model=SMART_RECAP_OPENAI_MODEL,
-            system_prompt=prompt_text,
-            output_language="English",
-            selected_sources=[],
-            derived_stats={},
-            transcript_text=transcript_text,
-            max_tokens=900,
-        )
-        return {
-            "ok": True,
-            "tone": tone,
-            "markdown": markdown,
-            "elapsed_seconds": round(time.perf_counter() - started_at, 2),
-            "transcript_chars": len(transcript_text),
-        }
-    except requests.HTTPError as exc:
-        logger.exception("Smart recap background request failed", extra={"tone": tone})
-        return build_failed_job_result(
-            format_generic_http_error(exc, "Smart Recap"),
-            details=build_http_error_debug_details(exc, "Smart Recap"),
-        )
-    except requests.RequestException as exc:
-        logger.exception("Smart recap background network error", extra={"tone": tone})
-        return build_failed_job_result(
-            f"Smart Recap network error: {exc}",
-            details=build_request_exception_debug_details(exc, "Smart Recap"),
-        )
-
-
-def apply_smart_recap_job_result(job_result: Dict[str, Any]) -> None:
-    if not job_result.get("ok"):
-        set_api_error_details("Smart Recap", job_result.get("details"))
-        set_api_error_message(str(job_result.get("message") or "Smart Recap request failed."))
-        tone = str(job_result.get("tone") or st.session_state.get("smart_recap_in_progress_tone") or "").strip().lower()
-        if tone in {"professional", "hype", "surprise"}:
-            st.session_state["smart_recap_active_tone"] = tone
-        st.session_state["smart_recap_in_progress"] = False
-        st.session_state["smart_recap_in_progress_tone"] = ""
-        st.session_state["smart_recap_job_id"] = ""
-        clear_background_notice()
-        return
-
-    smart_recap_bundle = _normalize_smart_recap_bundle(st.session_state.get("smart_recap_bundle", {}))
-
-    tone = str(job_result.get("tone") or "").strip().lower()
-    markdown = str(job_result.get("markdown") or "").strip()
-    if tone in {"professional", "hype", "surprise"} and markdown:
-        smart_recap_bundle[tone] = markdown
-        st.session_state["smart_recap_active_tone"] = tone
-
-    st.session_state["smart_recap_bundle"] = smart_recap_bundle
-    st.session_state["smart_recap_ran"] = bool(
-        any(isinstance(value, str) and value.strip() for value in smart_recap_bundle.values())
-    )
-    st.session_state["smart_recap_in_progress"] = False
-    st.session_state["smart_recap_in_progress_tone"] = ""
-    st.session_state["smart_recap_job_id"] = ""
-
-    current_session_id = str(st.session_state.get("current_session_id") or "").strip()
-    api_key = st.session_state.get("api_key_input", os.getenv("LS_API_KEY", ""))
-    if current_session_id and api_key and isinstance(smart_recap_bundle, dict) and smart_recap_bundle:
-        persist_cached_session_safely(api_key, current_session_id, smart_recap_bundle=smart_recap_bundle)
-
-    elapsed_seconds = job_result.get("elapsed_seconds")
-    transcript_chars = job_result.get("transcript_chars")
-    if isinstance(elapsed_seconds, (int, float)) and isinstance(transcript_chars, int):
-        set_background_notice(
-            f"Smart Recap ready in {elapsed_seconds:.2f}s using {transcript_chars:,} transcript characters."
-        )
-    else:
-        clear_background_notice()
-
-
-def apply_chat_questions_job_result(job_result: Dict[str, Any]) -> None:
-    if not job_result.get("ok"):
-        set_api_error_details("Chat & Questions", job_result.get("details"))
-        set_api_error_message(str(job_result.get("message") or "Chat & Questions request failed."))
-        st.session_state["fetch_in_progress"] = False
-        st.session_state["chat_fetch_job_id"] = ""
-        refresh_fetch_cycle_state()
-        clear_background_notice()
-        return
-
-    clear_analysis_output()
-    clear_api_error_details()
-    clear_background_notice()
-    st.session_state["chat_payload"] = job_result.get("chat_payload")
-    st.session_state["chat_df"] = job_result.get("chat_df")
-    st.session_state["questions_payload"] = job_result.get("questions_payload")
-    st.session_state["questions_df"] = job_result.get("questions_df")
-    st.session_state["current_session_id"] = job_result.get("session_id", "")
-    st.session_state["last_fetched_chat_session_id"] = job_result.get("session_id", "")
-    st.session_state["open_chat_questions_once"] = True
-    mark_analysis_source_defaults(st.session_state, include_chat=True)
-    if isinstance(st.session_state.get("questions_df"), pd.DataFrame):
-        mark_analysis_source_defaults(st.session_state, include_questions=True)
-    st.session_state["fetch_in_progress"] = False
-    st.session_state["chat_fetch_job_id"] = ""
-    session_id = job_result.get("session_id", "")
-    api_key = st.session_state.get("api_key_input", os.getenv("LS_API_KEY", ""))
-    if session_id and api_key:
-        persist_cached_session_safely(
-            str(api_key),
-            str(session_id),
-            chat_payload=job_result.get("chat_payload"),
-            questions_payload=job_result.get("questions_payload"),
-        )
-    if st.session_state.get("fetch_data_in_progress", False) and session_id:
-        if isinstance(st.session_state.get("transcript_payload"), dict):
-            refresh_fetch_cycle_state()
-        else:
-            start_transcript_fetch(str(session_id))
-    else:
-        refresh_fetch_cycle_state()
-
-
-def apply_session_overview_job_result(job_result: Dict[str, Any]) -> None:
-    if not job_result.get("ok"):
-        set_api_error_details("Session overview", job_result.get("details"))
-        set_api_error_message(str(job_result.get("message") or "Session overview request failed."))
-        st.session_state["session_fetch_in_progress"] = False
-        st.session_state["session_fetch_job_id"] = ""
-        refresh_fetch_cycle_state()
-        clear_background_notice()
-        return
-
-    clear_analysis_output()
-    clear_api_error_details()
-    clear_background_notice()
-    session_id = str(job_result.get("session_id") or "").strip()
-    session_payload = job_result.get("session_payload")
-    st.session_state["session_payload"] = session_payload if isinstance(session_payload, dict) else None
-    st.session_state["current_session_id"] = session_id
-    st.session_state["last_fetched_session_overview_id"] = build_session_request_signature(session_id)
-    st.session_state["open_session_overview_once"] = True
-    st.session_state["session_fetch_in_progress"] = False
-    st.session_state["session_fetch_job_id"] = ""
-    refresh_fetch_cycle_state()
-
-    api_key = st.session_state.get("api_key_input", os.getenv("LS_API_KEY", ""))
-    if session_id and api_key and isinstance(session_payload, dict):
-        persist_cached_session_safely(str(api_key), session_id, session_payload=session_payload)
-
-
-def apply_transcript_success(session_id: str, transcript_payload: Dict[str, Any]) -> None:
-    clear_analysis_output()
-    clear_api_error_details()
-    clear_background_notice()
-    transcript_text = build_transcript_display_text(transcript_payload)
-    st.session_state["transcript_payload"] = transcript_payload
-    st.session_state["transcript_text"] = transcript_text
-    st.session_state["last_fetched_transcript_signature"] = build_transcript_request_signature(
-        str(session_id or ""),
-    )
-    st.session_state["current_session_id"] = str(session_id or "")
-    st.session_state["transcript_fetch_in_progress"] = False
-    st.session_state["transcript_job_id"] = ""
-    st.session_state["transcript_job_status"] = "completed"
-    st.session_state["transcript_job_started_at"] = 0.0
-    st.session_state["open_transcript_once"] = True
-    refresh_fetch_cycle_state()
-    api_key = st.session_state.get("api_key_input", os.getenv("LS_API_KEY", ""))
-    if session_id and api_key:
-        persist_cached_session_safely(str(api_key), str(session_id), transcript_payload=transcript_payload)
-    mark_analysis_source_defaults(st.session_state, include_transcript=True)
-    st.session_state["analysis_include_transcript_pending"] = True
-
-
-def start_transcript_fetch(session_id: str) -> None:
-    transcript_api_key = get_runtime_secret("API_AUTH_KEY", "")
-    if not transcript_api_key:
-        st.error("Transcript fetch skipped: missing `API_AUTH_KEY` in environment.")
-        refresh_fetch_cycle_state()
-        return
-    if not session_id:
-        st.error("Please select a valid session before fetching the transcript.")
-        refresh_fetch_cycle_state()
-        return
-
-    st.session_state["transcript_fetch_in_progress"] = True
-    st.session_state["current_session_id"] = session_id
-    st.session_state["transcript_payload"] = None
-    st.session_state["transcript_text"] = ""
-    try:
-        job_payload = create_transcript_job(transcript_api_key, session_id, timestamped=True)
-    except requests.HTTPError as exc:
-        logger.exception(
-            "Transcript job creation failed",
-            extra={"session_id": session_id},
-        )
-        fail_transcript_job(
-            format_generic_http_error(exc, "Transcript"),
-            build_http_error_debug_details(exc, "Transcript"),
-        )
-        return
-    except requests.RequestException as exc:
-        logger.exception(
-            "Transcript job creation network error",
-            extra={"session_id": session_id},
-        )
-        fail_transcript_job(
-            f"Transcript network error: {exc}",
-            build_request_exception_debug_details(exc, "Transcript"),
-        )
-        return
-
-    job_id = str(job_payload.get("job_id") or "").strip()
-    if not job_id:
-        fail_transcript_job(
-            "Transcript job was created without a job ID.",
-            build_transcript_job_debug_details(job_payload, "Transcript"),
-        )
-        return
-
-    st.session_state["transcript_job_id"] = job_id
-    st.session_state["transcript_job_status"] = str(job_payload.get("status") or "queued").strip().lower() or "queued"
-    st.session_state["transcript_job_started_at"] = time.time()
-    poll_transcript_job_if_needed()
-
-
-def fail_transcript_job(message: str, details: Dict[str, Any] | None = None, *, status: str = "failed") -> None:
-    set_api_error_details("Transcript", details)
-    set_api_error_message(message)
-    st.session_state["transcript_fetch_in_progress"] = False
-    st.session_state["transcript_job_status"] = status
-    st.session_state["transcript_job_id"] = ""
-    st.session_state["transcript_job_started_at"] = 0.0
-    refresh_fetch_cycle_state()
-    clear_background_notice()
-
-
-def render_background_jobs_panel() -> None:
-    chat_job_id = str(st.session_state.get("chat_fetch_job_id") or "").strip()
-    session_job_id = str(st.session_state.get("session_fetch_job_id") or "").strip()
-    smart_recap_job_id = str(st.session_state.get("smart_recap_job_id") or "").strip()
-
-    def render_panel() -> None:
-        active_labels: List[str] = []
-
-        if session_job_id:
-            snapshot = job_manager.get(session_job_id)
-            if snapshot and snapshot.get("done"):
-                result = snapshot.get("result")
-                if isinstance(result, dict):
-                    apply_session_overview_job_result(result)
-                elif snapshot.get("exception") is not None:
-                    apply_session_overview_job_result(
-                        build_failed_job_result(
-                            "Session overview background job failed unexpectedly.",
-                            details={"exception_type": type(snapshot["exception"]).__name__, "message": str(snapshot["exception"])},
-                        )
-                    )
-                job_manager.discard(session_job_id)
-                st.rerun()
-            elif snapshot:
-                active_labels.append("Fetching session overview...")
-            else:
-                st.session_state["session_fetch_in_progress"] = False
-                st.session_state["session_fetch_job_id"] = ""
-                refresh_fetch_cycle_state()
-
-        if chat_job_id:
-            snapshot = job_manager.get(chat_job_id)
-            if snapshot and snapshot.get("done"):
-                result = snapshot.get("result")
-                if isinstance(result, dict):
-                    apply_chat_questions_job_result(result)
-                elif snapshot.get("exception") is not None:
-                    apply_chat_questions_job_result(
-                        build_failed_job_result(
-                            "Chat & Questions background job failed unexpectedly.",
-                            details={"exception_type": type(snapshot["exception"]).__name__, "message": str(snapshot["exception"])},
-                        )
-                    )
-                job_manager.discard(chat_job_id)
-                st.rerun()
-            elif snapshot:
-                active_labels.append("Fetching chat & questions...")
-            else:
-                st.session_state["fetch_in_progress"] = False
-                st.session_state["chat_fetch_job_id"] = ""
-                refresh_fetch_cycle_state()
-
-        if smart_recap_job_id:
-            snapshot = job_manager.get(smart_recap_job_id)
-            if snapshot and snapshot.get("done"):
-                result = snapshot.get("result")
-                if isinstance(result, dict):
-                    apply_smart_recap_job_result(result)
-                elif snapshot.get("exception") is not None:
-                    apply_smart_recap_job_result(
-                        build_failed_job_result(
-                            "Smart Recap background job failed unexpectedly.",
-                            details={"exception_type": type(snapshot["exception"]).__name__, "message": str(snapshot["exception"])},
-                        )
-                    )
-                job_manager.discard(smart_recap_job_id)
-                st.rerun()
-            elif snapshot:
-                tone = str(st.session_state.get("smart_recap_in_progress_tone") or "smart recap").strip().title()
-                active_labels.append(f"Generating {tone} recap...")
-            else:
-                st.session_state["smart_recap_in_progress"] = False
-                st.session_state["smart_recap_in_progress_tone"] = ""
-                st.session_state["smart_recap_job_id"] = ""
-                clear_background_notice()
-
-        for label in active_labels:
-            with st.spinner(label):
-                st.caption(" ")
-
-        notice = str(st.session_state.get("background_job_notice") or "").strip()
-        if notice:
-            st.caption(notice)
-
-    if hasattr(st, "fragment") and (session_job_id or chat_job_id or smart_recap_job_id):
-        @st.fragment(run_every="2s")
-        def _jobs_fragment() -> None:
-            render_panel()
-
-        _jobs_fragment()
-    else:
-        render_panel()
-
-
-def poll_transcript_job_if_needed() -> None:
-    if not st.session_state.get("transcript_fetch_in_progress", False):
-        return
-
-    transcript_api_key = get_runtime_secret("API_AUTH_KEY", "")
-    job_id = str(st.session_state.get("transcript_job_id") or "").strip()
-    session_id = str(st.session_state.get("current_session_id") or "").strip()
-    if not transcript_api_key or not job_id:
-        return
-
-    started_at = float(st.session_state.get("transcript_job_started_at") or 0.0)
-    if started_at and (time.time() - started_at) > (15 * 60):
-        fail_transcript_job("Transcript job timed out after 15 minutes.", {"job_id": job_id, "status": "timeout"}, status="timeout")
-        st.rerun()
-
-    try:
-        job_payload = get_transcript_job(transcript_api_key, job_id)
-    except requests.HTTPError as exc:
-        logger.exception("Transcript job polling failed", extra={"session_id": session_id, "job_id": job_id})
-        status_code = exc.response.status_code if exc.response is not None else None
-        if status_code is not None and status_code < 500 and status_code not in (408, 429):
-            fail_transcript_job(
-                format_generic_http_error(exc, "Transcript"),
-                build_http_error_debug_details(exc, "Transcript"),
-            )
-            st.rerun()
-        return
-    except requests.RequestException:
-        return
-
-    status = str(job_payload.get("status") or "").strip().lower()
-    if status:
-        st.session_state["transcript_job_status"] = status
-
-    if status == "completed":
-        result = job_payload.get("result")
-        transcript = result.get("transcript") if isinstance(result, dict) else None
-        transcription = result.get("transcription") if isinstance(result, dict) else None
-        if isinstance(transcript, dict) or isinstance(transcription, dict):
-            apply_transcript_success(session_id, job_payload)
-        else:
-            fail_transcript_job(
-                "Transcript job completed without a supported transcript result.",
-                build_transcript_job_debug_details(job_payload, "Transcript"),
-            )
-        st.rerun()
-
-    if status == "failed":
-        error = job_payload.get("error")
-        message = error.get("message") if isinstance(error, dict) else "Transcript job failed."
-        fail_transcript_job(message, build_transcript_job_debug_details(job_payload, "Transcript"))
-        st.rerun()
-
-
-def render_transcript_job_poller() -> None:
-    if not st.session_state.get("transcript_fetch_in_progress", False):
-        return
-    if not str(st.session_state.get("transcript_job_id") or "").strip():
-        return
-
-    if hasattr(st, "fragment"):
-        @st.fragment(run_every=f"{TRANSCRIPT_POLL_INTERVAL_SECONDS}s")
-        def _transcript_poll_fragment() -> None:
-            poll_transcript_job_if_needed()
-
-        _transcript_poll_fragment()
-    else:
-        poll_transcript_job_if_needed()
-
-
-configure_page()
-apply_brand_styles()
-init_session_state()
-render_header()
+load_env_file()
 try:
     ensure_database_schema()
 except Exception:
     logger.exception("Database schema initialization failed")
 
-has_session_content = st.session_state.get("session_payload") is not None
-has_chat_content = st.session_state.get("chat_df") is not None
-has_questions_content = st.session_state.get("questions_df") is not None
-has_transcript_content = st.session_state.get("transcript_payload") is not None
-has_fetched_content = has_session_content or has_chat_content or has_questions_content or has_transcript_content
-
-controls_col, main_col = st.columns([0.95, 3.05], gap="large")
-
-fetch_data_button = False
-load_event_sessions_button = False
-selected_session_from_event = st.session_state.get("selected_event_session_id")
-output_language_label = st.session_state.get("analysis_language", "English")
-
-api_key = st.session_state.get("api_key_input", os.getenv("LS_API_KEY", ""))
-has_api_key = bool(str(api_key).strip())
-transcript_api_key = get_runtime_secret("API_AUTH_KEY", "")
-has_transcript_api_key = bool(str(transcript_api_key).strip())
-api_analysis_key = get_runtime_secret("OPENAI_API_KEY", "")
-input_mode = st.session_state.get("input_mode", INPUT_MODE_OPTIONS[0])
-session_id = st.session_state.get("session_id_input", "")
-event_id = st.session_state.get("event_id_input", "")
-session_id_valid = bool(SESSION_ID_PATTERN.match(str(session_id).strip()))
-event_id_valid = bool(EVENT_ID_PATTERN.match(str(event_id).strip()))
-active_session_id = get_active_session_id(input_mode, session_id, selected_session_from_event)
-current_transcript_signature = build_transcript_request_signature(
-    active_session_id,
+app = FastAPI(title="Livestorm Post Event Analysis API", version="0.1.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
-form_locked = bool(st.session_state.get("transcript_fetch_in_progress", False))
 
-if controls_col is not None:
-    with controls_col:
-        render_api_error_details()
-        st.subheader("Connection")
-        api_key = st.text_input(
-            "Livestorm API key",
-            value=st.session_state.get("api_key_input", os.getenv("LS_API_KEY", "")),
-            type="password",
-            help="Your Livestorm API key",
-            key="api_key_input",
-            disabled=form_locked,
-        )
-        has_api_key = bool(api_key.strip())
-        transcript_api_key = get_runtime_secret("API_AUTH_KEY", "")
-        has_transcript_api_key = bool(str(transcript_api_key).strip())
-        has_any_connection_key = has_api_key or has_transcript_api_key
+if BRAND_ASSETS_DIR.exists():
+    app.mount("/brand-assets", StaticFiles(directory=BRAND_ASSETS_DIR), name="brand-assets")
 
-        input_mode = st.radio(
-            "Input type",
-            options=INPUT_MODE_OPTIONS,
-            index=0 if st.session_state.get("input_mode", INPUT_MODE_OPTIONS[0]) == INPUT_MODE_OPTIONS[0] else 1,
-            horizontal=True,
-            disabled=(not has_any_connection_key) or form_locked,
-            key="input_mode",
-        )
 
-        session_id = ""
-        event_id = ""
-        session_id_valid = False
-        event_id_valid = False
-        selected_session_from_event = None
+@app.get("/api/health")
+def healthcheck() -> Dict[str, str]:
+    return {"status": "ok"}
 
-        if input_mode == "Session ID":
-            session_id = st.text_input(
-                "Session ID",
-                value=st.session_state.get("session_id_input", ""),
-                help="Livestorm session ID",
-                disabled=(not has_any_connection_key) or form_locked,
-                key="session_id_input",
-            )
-            session_id_valid = bool(SESSION_ID_PATTERN.match(session_id.strip()))
-        else:
-            event_id = st.text_input(
-                "Event ID",
-                value=st.session_state.get("event_id_input", ""),
-                help="Livestorm event ID",
-                disabled=(not has_api_key) or form_locked,
-                key="event_id_input",
-            )
-            event_id_valid = bool(EVENT_ID_PATTERN.match(event_id.strip()))
-            if st.session_state.get("load_event_sessions_in_progress", False):
-                st.button(
-                    "Loading Past Sessions...",
-                    key="load_sessions_running_btn",
-                    type="primary",
-                    disabled=True,
-                )
-            else:
-                load_event_sessions_button = st.button(
-                    "Load Past Sessions",
-                    key="load_sessions_btn",
-                    type="primary",
-                    disabled=(not has_api_key) or form_locked,
-                )
 
-            event_sessions = st.session_state.get("event_sessions", [])
-            event_sessions_for = st.session_state.get("event_sessions_for", "")
-            if event_sessions_for == event_id.strip() and event_sessions:
-                options = [item["id"] for item in event_sessions if isinstance(item, dict) and "id" in item]
-                session_labels = {
-                    item["id"]: item.get("label", item["id"])
-                    for item in event_sessions
-                    if isinstance(item, dict) and "id" in item
-                }
-                selected_session_from_event = st.selectbox(
-                    "Select a past session",
-                    options=options,
-                    format_func=lambda sid: session_labels.get(sid, sid),
-                    disabled=(not bool(options)) or form_locked,
-                    key="selected_event_session_id",
-                )
-                if selected_session_from_event:
-                    st.caption(f"Selected session: `{selected_session_from_event}`")
-
-        active_session_id = get_active_session_id(input_mode, session_id, selected_session_from_event)
-        current_transcript_signature = build_transcript_request_signature(
-            active_session_id,
-        )
-
-        chat_request_already_fetched = (
-            bool(active_session_id)
-            and st.session_state.get("last_fetched_chat_session_id", "") == active_session_id
-        )
-        session_request_already_fetched = (
-            bool(active_session_id)
-            and st.session_state.get("last_fetched_session_overview_id", "") == build_session_request_signature(active_session_id)
-        )
-        transcript_request_already_fetched = (
-            bool(active_session_id)
-            and st.session_state.get("last_fetched_transcript_signature", "") == current_transcript_signature
-        )
-        transcript_job_in_progress = bool(st.session_state.get("transcript_job_id", ""))
-        chat_job_in_progress = bool(st.session_state.get("chat_fetch_job_id", ""))
-        session_job_in_progress = bool(st.session_state.get("session_fetch_job_id", ""))
-
-        fetch_disabled = (
-            (not has_api_key)
-            or (not has_transcript_api_key)
-            or (not bool(active_session_id))
-            or (session_request_already_fetched and chat_request_already_fetched and transcript_request_already_fetched)
-            or session_job_in_progress
-            or chat_job_in_progress
-            or transcript_job_in_progress
-            or form_locked
-        )
-        can_show_fetch_button = input_mode == "Session ID" or bool(active_session_id)
-
-        if can_show_fetch_button:
-            fetch_btn_placeholder = st.empty()
-            if st.session_state.get("session_fetch_in_progress", False):
-                fetch_btn_placeholder.button(
-                    "Fetching Session Overview...",
-                    type="primary",
-                    disabled=True,
-                    key="fetch_data_running_session_btn",
-                )
-            elif st.session_state.get("fetch_in_progress", False):
-                fetch_btn_placeholder.button(
-                    "Fetching Chat & Questions...",
-                    type="primary",
-                    disabled=True,
-                    key="fetch_data_running_chat_btn",
-                )
-            elif st.session_state.get("transcript_fetch_in_progress", False):
-                fetch_btn_placeholder.button(
-                    "Fetching Transcript...",
-                    type="primary",
-                    disabled=True,
-                    key="fetch_data_running_transcript_btn",
-                )
-            else:
-                fetch_data_button = fetch_btn_placeholder.button(
-                    "Fetch Data",
-                    type="primary",
-                    disabled=fetch_disabled,
-                    key="fetch_data_run_btn",
-                )
-                if session_request_already_fetched and chat_request_already_fetched and transcript_request_already_fetched:
-                    st.caption("Data already fetched for this session. Change the session to fetch again.")
-
-        if not has_api_key and not has_transcript_api_key:
-            st.caption("Add a Livestorm API key and set `API_AUTH_KEY` to fetch data.")
-        elif has_transcript_api_key and not has_api_key:
-            st.caption("Add a Livestorm API key to fetch chat/questions and load past sessions.")
-        elif not has_transcript_api_key:
-            st.caption("Set `API_AUTH_KEY` in `.env` or Streamlit secrets to enable transcript fetching.")
-        elif input_mode == "Session ID" and session_id and not session_id_valid:
-            st.caption("Session ID must be a valid UUID format.")
-        elif input_mode == "Event ID" and event_id and not event_id_valid:
-            st.caption("Event ID must be a valid UUID format.")
-        elif input_mode == "Event ID" and event_id_valid and not active_session_id:
-            st.caption("Load past sessions, then select one session before fetching.")
-
-if load_event_sessions_button:
-    st.session_state["load_event_sessions_in_progress"] = True
-    st.rerun()
-
-if st.session_state.get("load_event_sessions_in_progress", False):
-    st.session_state["event_sessions"] = []
-    st.session_state["event_sessions_for"] = ""
-    if not api_key:
-        st.error("Please provide your Livestorm API key.")
-        st.session_state["load_event_sessions_in_progress"] = False
-    elif not event_id:
-        st.error("Please provide an event ID.")
-        st.session_state["load_event_sessions_in_progress"] = False
-    elif not EVENT_ID_PATTERN.match(event_id.strip()):
-        st.error("Event ID must be a valid UUID format.")
-        st.session_state["load_event_sessions_in_progress"] = False
-    else:
-        try:
-            event_sessions_payload = fetch_event_past_sessions(api_key, event_id.strip())
-        except requests.HTTPError as exc:
-            logger.exception("Event sessions request failed", extra={"event_id": event_id.strip()})
-            set_api_error_details("Event sessions", build_http_error_debug_details(exc, "Event sessions"))
-            set_api_error_message(format_livestorm_http_error(exc, "Event sessions"))
-            event_sessions_payload = None
-        except requests.RequestException as exc:
-            logger.exception("Event sessions network error", extra={"event_id": event_id.strip()})
-            set_api_error_details("Event sessions", build_request_exception_debug_details(exc, "Event sessions"))
-            set_api_error_message(f"Event sessions network error: {exc}")
-            event_sessions_payload = None
-
-        if isinstance(event_sessions_payload, dict):
-            clear_api_error_details()
-            options = build_event_session_options(event_sessions_payload)
-            st.session_state["event_sessions"] = options
-            st.session_state["event_sessions_for"] = event_id.strip()
-            if options:
-                st.success(
-                    f"Loaded {len(options)} past sessions across "
-                    f"{event_sessions_payload.get('pages_fetched', 1)} page(s)."
-                )
-            else:
-                st.info("No past sessions were found for this event.")
-            st.session_state["load_event_sessions_in_progress"] = False
-            st.rerun()
-    st.session_state["load_event_sessions_in_progress"] = False
-
-if fetch_data_button:
-    previous_session_id = st.session_state.get("current_session_id", "")
-    clear_analysis_output()
-    clear_api_error_details()
-    clear_background_notice()
-    st.session_state["analysis_expander_open"] = True
-    st.session_state["open_session_overview_once"] = True
-    st.session_state["open_transcript_once"] = True
-    st.session_state["open_chat_questions_once"] = True
-    if previous_session_id and previous_session_id != active_session_id:
-        reset_session_overview_state()
-        reset_chat_question_state()
-        reset_transcript_state()
-        st.session_state["open_session_overview_once"] = True
-        st.session_state["open_transcript_once"] = True
-        st.session_state["open_chat_questions_once"] = True
-
-    if not api_key or not transcript_api_key or not active_session_id:
-        st.error("Please provide the Livestorm API key, transcript API key, and a valid session selection.")
-    else:
-        st.session_state["current_session_id"] = active_session_id
-        cached_session = None
-        if database_enabled():
-            try:
-                cached_session = fetch_cached_session(api_key, active_session_id)
-            except Exception:
-                logger.exception("Failed to load cached session", extra={"session_id": active_session_id})
-
-        if isinstance(cached_session, dict):
-            load_cached_session_into_state(api_key, active_session_id, cached_session)
-
-        has_cached_session = isinstance(st.session_state.get("session_payload"), dict)
-        has_cached_chat = isinstance(st.session_state.get("chat_payload"), dict)
-        has_cached_questions = isinstance(st.session_state.get("questions_payload"), dict)
-        has_cached_transcript = isinstance(st.session_state.get("transcript_payload"), dict)
-
-        if has_cached_session and has_cached_chat and has_cached_questions and has_cached_transcript:
-            st.rerun()
-
-        st.session_state["fetch_data_in_progress"] = True
-        if not has_cached_session:
-            st.session_state["session_fetch_in_progress"] = True
-            st.session_state["session_fetch_job_id"] = job_manager.submit(
-                "session_overview",
-                run_session_overview_job,
-                context={"session_id": active_session_id},
-                api_key=api_key,
-                session_id=active_session_id,
-            )
-        if not (has_cached_chat and has_cached_questions):
-            st.session_state["fetch_in_progress"] = True
-            st.session_state["chat_fetch_job_id"] = job_manager.submit(
-                "chat_questions",
-                run_chat_questions_job,
-                context={"session_id": active_session_id},
-                api_key=api_key,
-                session_id=active_session_id,
-            )
-        elif not has_cached_transcript:
-            start_transcript_fetch(active_session_id)
-    st.rerun()
-
-payload = st.session_state.get("chat_payload")
-df = st.session_state.get("chat_df")
-questions_payload = st.session_state.get("questions_payload")
-questions_df = st.session_state.get("questions_df")
-session_payload = st.session_state.get("session_payload")
-transcript_payload = st.session_state.get("transcript_payload")
-transcript_text = st.session_state.get("transcript_text", "")
-content_repurpose_md = st.session_state.get("content_repurpose_md", "")
-content_repurpose_bundle = st.session_state.get("content_repurpose_bundle", {})
-content_repurpose_ran = st.session_state.get("content_repurpose_ran", False)
-smart_recap_bundle = st.session_state.get("smart_recap_bundle", {})
-smart_recap_ran = st.session_state.get("smart_recap_ran", False)
-current_session_id = st.session_state.get("current_session_id") or active_session_id
-selected_analysis_language = st.session_state.get("analysis_language", output_language_label)
-analysis_bundle = _normalize_text_bundle(st.session_state.get("analysis_bundle", {}), st.session_state.get("analysis_md", ""))
-deep_analysis_bundle = _normalize_text_bundle(st.session_state.get("deep_analysis_bundle", {}), st.session_state.get("deep_analysis_md", ""))
-analysis_md = str(analysis_bundle.get(selected_analysis_language) or "")
-analysis_ran = bool(analysis_md.strip())
-deep_analysis_md = str(deep_analysis_bundle.get(selected_analysis_language) or "")
-deep_analysis_ran = bool(deep_analysis_md.strip())
-st.session_state["analysis_bundle"] = analysis_bundle
-st.session_state["deep_analysis_bundle"] = deep_analysis_bundle
-st.session_state["analysis_md"] = analysis_md
-st.session_state["analysis_ran"] = analysis_ran
-st.session_state["deep_analysis_md"] = deep_analysis_md
-st.session_state["deep_analysis_ran"] = deep_analysis_ran
-transcript_loading = bool(st.session_state.get("transcript_fetch_in_progress", False) and st.session_state.get("transcript_job_id", ""))
-chat_questions_loading = bool(st.session_state.get("fetch_in_progress", False) and st.session_state.get("chat_fetch_job_id", ""))
-session_overview_loading = bool(st.session_state.get("session_fetch_in_progress", False) and st.session_state.get("session_fetch_job_id", ""))
-
-with main_col:
-    render_transcript_job_poller()
-    render_background_jobs_panel()
-    transcript_available = isinstance(transcript_payload, dict)
-    chat_available = isinstance(df, pd.DataFrame)
-    questions_available = isinstance(questions_df, pd.DataFrame)
-    analyze_button = False
-    deep_analysis_button = False
-    smart_recap_button = None
-    content_repurpose_button = False
-
-    current_view_slug = get_current_view_slug()
-    st.markdown(
-        """
-        <style>
-        div[data-testid="stHorizontalBlock"] div[data-testid="column"] .stButton > button[kind] {
-          white-space: nowrap;
-          min-height: 2.7rem;
-          font-size: 0.92rem;
-          padding-left: 0.55rem;
-          padding-right: 0.55rem;
+@app.get("/api/bootstrap")
+def bootstrap_defaults() -> Dict[str, Any]:
+    default_api_key = ""
+    if ENV_PATH.exists():
+        default_api_key = get_runtime_secret("LS_API_KEY", "")
+    return {
+        "defaults": {
+            "apiKey": default_api_key,
         }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-    nav_columns = st.columns([1.15, 1.0, 1.15, 1.0, 1.1, 1.0])
-    selected_view_slug = current_view_slug
-    for nav_column, (view_slug, view_label) in zip(nav_columns, NAVIGATION_VIEWS):
-        with nav_column:
-            if view_slug == current_view_slug:
-                st.button(
-                    view_label,
-                    key=f"nav_active_{view_slug}",
-                    type="primary",
-                    disabled=True,
-                    width="stretch",
-                )
-            else:
-                clicked = st.button(
-                    view_label,
-                    key=f"nav_{view_slug}",
-                    width="stretch",
-                )
-                if clicked:
-                    selected_view_slug = view_slug
-    if selected_view_slug != current_view_slug:
-        set_current_view_slug(selected_view_slug)
-        st.rerun()
-    st.markdown("<div style='height: 0.6rem;'></div>", unsafe_allow_html=True)
+    }
 
-    if selected_view_slug == "session-overview":
-        render_session_overview_block(
-            session_payload=session_payload,
-            current_session_id=current_session_id,
-            is_loading=session_overview_loading,
-            should_open=bool(st.session_state.get("open_session_overview_once", False)),
-        )
-    elif selected_view_slug == "transcript":
-        render_transcript_block(
-            transcript_payload,
-            transcript_text,
-            current_session_id,
-            is_loading=transcript_loading,
-            should_open=bool(st.session_state.get("open_transcript_once", False)),
-            on_save_speaker_labels=(
-                (lambda session_id, speaker_names: persist_speaker_labels_for_session(api_key, session_id, speaker_names))
-                if api_key
-                else None
-            ),
-        )
-    elif selected_view_slug == "chat-questions":
-        render_chat_questions_block(
-            df,
-            questions_df,
-            current_session_id,
-            is_loading=chat_questions_loading,
-            should_open=bool(st.session_state.get("open_chat_questions_once", False)),
-        )
-    elif selected_view_slug == "analysis":
-        analyze_button, deep_analysis_button = render_analysis_block(
-            current_session_id=current_session_id,
-            analysis_ran=analysis_ran,
-            analysis_md=analysis_md,
-            deep_analysis_ran=deep_analysis_ran,
-            deep_analysis_md=deep_analysis_md,
-            transcript_available=transcript_available,
-            chat_available=chat_available,
-            questions_available=questions_available,
-            transcript_payload=transcript_payload,
-            chat_df=df,
-            questions_df=questions_df,
-        )
-    elif selected_view_slug == "smart-recap":
-        smart_recap_button = render_smart_recap_block(
-            current_session_id=current_session_id,
-            transcript_available=transcript_available,
-            smart_recap_bundle=smart_recap_bundle,
-            smart_recap_ran=smart_recap_ran,
-        )
-    elif selected_view_slug == "content-repurposing":
-        content_repurpose_button = render_content_repurpose_block(
-            current_session_id=current_session_id,
-            transcript_available=transcript_available,
-            chat_available=chat_available,
-            questions_available=questions_available,
-            content_repurpose_bundle=content_repurpose_bundle,
-            content_repurpose_ran=content_repurpose_ran,
-        )
-    st.session_state["open_session_overview_once"] = False
-    st.session_state["open_transcript_once"] = False
-    st.session_state["open_chat_questions_once"] = False
 
-if analyze_button:
-    st.session_state["analysis_in_progress"] = True
-    st.rerun()
-
-if deep_analysis_button:
-    st.session_state["deep_analysis_in_progress"] = True
-    st.rerun()
-
-if content_repurpose_button:
-    st.session_state["content_repurpose_in_progress"] = True
-    st.rerun()
-
-if smart_recap_button:
-    transcript_payload = st.session_state.get("transcript_payload")
-    requested_tone = str(smart_recap_button or "").strip().lower()
-    if transcript_payload is None:
-        st.warning("Smart Recap requires a transcript.")
-    elif not api_analysis_key:
-        st.warning("Smart Recap skipped: missing `OPENAI_API_KEY` in environment.")
-    elif requested_tone not in {"professional", "hype", "surprise"}:
-        st.warning("Please select a valid Smart Recap type.")
-    else:
-        clear_api_error_details()
-        clear_background_notice()
-        st.session_state["analysis_expander_open"] = False
-        st.session_state["smart_recap_active_tone"] = requested_tone
-        st.session_state["smart_recap_in_progress"] = True
-        st.session_state["smart_recap_in_progress_tone"] = requested_tone
-        st.session_state["smart_recap_job_id"] = job_manager.submit(
-            "smart_recap",
-            run_smart_recap_job,
-            context={"tone": requested_tone},
-            api_key=api_analysis_key,
-            tone=requested_tone,
-            transcript_text=build_transcript_plain_text(transcript_payload),
-        )
-    st.rerun()
-
-if st.session_state.get("analysis_in_progress", False):
-    session_payload = st.session_state.get("session_payload")
-    payload = st.session_state.get("chat_payload")
-    df = st.session_state.get("chat_df")
-    questions_payload = st.session_state.get("questions_payload")
-    questions_df = st.session_state.get("questions_df")
-    transcript_payload = st.session_state.get("transcript_payload")
-    selected_output_language = st.session_state.get("analysis_language", output_language_label)
-    chat_questions_available = bool(payload is not None and isinstance(df, pd.DataFrame) and questions_payload is not None and isinstance(questions_df, pd.DataFrame))
-    transcript_available = isinstance(transcript_payload, dict)
-
-    selected_sources: List[str] = []
-    if transcript_available:
-        selected_sources.append("transcript")
-    if chat_questions_available:
-        selected_sources.append("chat")
-        selected_sources.append("questions")
-
-    if not selected_sources:
-        st.warning("Select at least one available source before running analysis.")
-        st.session_state["analysis_in_progress"] = False
-        st.rerun()
-    if not api_analysis_key:
-        st.warning("Analysis skipped: missing `OPENAI_API_KEY` in environment.")
-        st.session_state["analysis_in_progress"] = False
-        st.rerun()
-
-    analysis_bundle = _normalize_text_bundle(st.session_state.get("analysis_bundle", {}), st.session_state.get("analysis_md", ""))
-    source_language, source_analysis_md = _get_alternate_language_text(analysis_bundle, selected_output_language)
-
+@app.post("/api/event-sessions")
+def event_sessions(request: EventSessionsRequest) -> Dict[str, Any]:
     try:
-        if source_analysis_md:
-            analysis_md = translate_markdown_with_openai(
-                api_key=api_analysis_key,
-                model=DEFAULT_OPENAI_MODEL,
-                source_markdown=source_analysis_md,
-                source_language=OUTPUT_LANGUAGE_MAP.get(source_language, source_language),
-                target_language=OUTPUT_LANGUAGE_MAP[selected_output_language],
-            )
-        else:
-            prompt_text = build_analysis_prompt(selected_sources)
-            derived_stats = build_derived_stats(
-                chat_df=df if "chat" in selected_sources else None,
-                questions_df=questions_df if "questions" in selected_sources else None,
-                transcript_payload=transcript_payload if "transcript" in selected_sources else None,
-                session_payload=session_payload if isinstance(session_payload, dict) else None,
-            )
-            analysis_md = analyze_with_openai(
-                api_key=api_analysis_key,
-                model=DEFAULT_OPENAI_MODEL,
-                system_prompt=prompt_text,
-                output_language=OUTPUT_LANGUAGE_MAP[selected_output_language],
-                selected_sources=selected_sources,
-                derived_stats=derived_stats,
-                raw_payload=build_compact_chat_payload_for_llm(df) if "chat" in selected_sources and isinstance(df, pd.DataFrame) else None,
-                questions_payload=build_compact_questions_payload_for_llm(questions_df) if "questions" in selected_sources and isinstance(questions_df, pd.DataFrame) else None,
-                transcript_text=build_transcript_plain_text(transcript_payload) if "transcript" in selected_sources and isinstance(transcript_payload, dict) else "",
-                session_payload=build_compact_session_payload_for_llm(session_payload) if isinstance(session_payload, dict) else None,
-            )
-    except requests.HTTPError as exc:
-        st.error(f"Analysis API error: {exc}")
-        analysis_md = ""
-    except requests.RequestException as exc:
-        st.error(f"Analysis network error: {exc}")
-        analysis_md = ""
+        return fetch_event_sessions(request.api_key, request.event_id)
+    except Exception as exc:
+        _raise_http_error("Event sessions", exc)
+        raise
 
-    analysis_bundle = _normalize_text_bundle(st.session_state.get("analysis_bundle", {}), st.session_state.get("analysis_md", ""))
-    if analysis_md.strip():
-        analysis_bundle[selected_output_language] = analysis_md
-    st.session_state["analysis_bundle"] = analysis_bundle
-    st.session_state["analysis_md"] = str(analysis_bundle.get(selected_output_language) or "")
-    st.session_state["analysis_ran"] = bool(st.session_state["analysis_md"].strip())
-    if analysis_md.strip() and current_session_id and api_key:
-        persist_cached_session_safely(
-            api_key,
-            current_session_id,
-            analysis_md=analysis_md,
-            analysis_bundle=analysis_bundle,
-        )
-    st.session_state["analysis_in_progress"] = False
-    st.rerun()
 
-if st.session_state.get("deep_analysis_in_progress", False):
-    session_payload = st.session_state.get("session_payload")
-    payload = st.session_state.get("chat_payload")
-    df = st.session_state.get("chat_df")
-    questions_payload = st.session_state.get("questions_payload")
-    questions_df = st.session_state.get("questions_df")
-    transcript_payload = st.session_state.get("transcript_payload")
-    selected_output_language = st.session_state.get("analysis_language", output_language_label)
+@app.get("/api/sessions/{session_id}")
+def get_session_workspace(session_id: str) -> Dict[str, Any]:
+    cached = get_cached_workspace(session_id)
+    if not isinstance(cached, dict):
+        raise HTTPException(status_code=404, detail={"resource": "Session cache", "message": "No cached session found."})
+    return cached
 
-    if transcript_payload is None or payload is None or df is None or questions_payload is None or questions_df is None:
-        st.warning("Deep analysis requires transcript, chat, and questions.")
-        st.session_state["deep_analysis_in_progress"] = False
-        st.rerun()
-    if not api_analysis_key:
-        st.warning("Deep analysis skipped: missing `OPENAI_API_KEY` in environment.")
-        st.session_state["deep_analysis_in_progress"] = False
-        st.rerun()
 
-    deep_analysis_bundle = _normalize_text_bundle(st.session_state.get("deep_analysis_bundle", {}), st.session_state.get("deep_analysis_md", ""))
-    source_language, source_deep_analysis_md = _get_alternate_language_text(deep_analysis_bundle, selected_output_language)
-
-    deep_analysis_request_failed = False
+@app.get("/api/sessions/{session_id}/cached")
+def get_cached_session_workspace(session_id: str) -> Response:
     try:
-        if source_deep_analysis_md:
-            deep_analysis_md = translate_markdown_with_openai(
-                api_key=api_analysis_key,
-                model=DEFAULT_OPENAI_MODEL,
-                source_markdown=source_deep_analysis_md,
-                source_language=OUTPUT_LANGUAGE_MAP.get(source_language, source_language),
-                target_language=OUTPUT_LANGUAGE_MAP.get(selected_output_language, selected_output_language),
-                max_tokens=8000,
-            )
-        else:
-            prompt_text = build_deep_analysis_prompt()
-            derived_stats = build_derived_stats(
-                chat_df=df,
-                questions_df=questions_df,
-                transcript_payload=transcript_payload,
-                session_payload=session_payload if isinstance(session_payload, dict) else None,
-            )
-            deep_analysis_kwargs = {
-                "api_key": api_analysis_key,
-                "system_prompt": prompt_text,
-                "output_language": OUTPUT_LANGUAGE_MAP.get(selected_output_language, selected_output_language),
-                "selected_sources": ["session", "chat", "questions", "transcript"],
-                "derived_stats": derived_stats,
-                "raw_payload": build_deep_analysis_chat_payload_for_llm(payload, max_rows=0),
-                "questions_payload": build_deep_analysis_questions_payload_for_llm(questions_payload, max_rows=0),
-                "transcript_payload": build_compact_transcript_payload_for_llm(transcript_payload, max_segments=0),
-                "session_payload": build_compact_session_payload_for_llm(session_payload) if isinstance(session_payload, dict) else None,
-                "max_tokens": 5000,
-            }
-            deep_analysis_model_used = DEEP_ANALYSIS_OPENAI_MODEL
-            deep_analysis_md = analyze_with_openai(
-                model=deep_analysis_model_used,
-                **deep_analysis_kwargs,
-            )
-            if not str(deep_analysis_md or "").strip() or str(deep_analysis_md or "").strip() in {
-                "No analysis returned by model.",
-                "No analysis text returned by model.",
-            }:
-                fallback_model = DEEP_ANALYSIS_FALLBACK_MODEL
-                if fallback_model != deep_analysis_model_used:
-                    logger.warning(
-                        "Deep analysis returned empty output with %s, retrying with %s",
-                        deep_analysis_model_used,
-                        fallback_model,
-                    )
-                    deep_analysis_model_used = fallback_model
-                    deep_analysis_md = analyze_with_openai(
-                        model=deep_analysis_model_used,
-                        **deep_analysis_kwargs,
-                    )
-            st.session_state["deep_analysis_model_used"] = deep_analysis_model_used
-    except requests.HTTPError as exc:
-        logger.exception("Deep analysis request failed")
-        set_api_error_details("Deep analysis", build_http_error_debug_details(exc, "Deep analysis"))
-        set_api_error_message(format_generic_http_error(exc, "Deep analysis"))
-        deep_analysis_md = ""
-        deep_analysis_request_failed = True
-    except requests.RequestException as exc:
-        logger.exception("Deep analysis network error")
-        set_api_error_details("Deep analysis", build_request_exception_debug_details(exc, "Deep analysis"))
-        set_api_error_message(f"Deep analysis network error: {exc}")
-        deep_analysis_md = ""
-        deep_analysis_request_failed = True
+        cached = get_cached_workspace(session_id)
+        if not isinstance(cached, dict):
+            return Response(status_code=204)
+        return JSONResponse(content=jsonable_encoder(cached))
+    except Exception:
+        logger.exception("Cached session route failed for session_id=%s", session_id)
+        return Response(status_code=204)
 
-    deep_analysis_text = str(deep_analysis_md or "").strip()
-    if (not deep_analysis_request_failed) and (
-        not deep_analysis_text or deep_analysis_text in {
-        "No analysis returned by model.",
-        "No analysis text returned by model.",
-    }):
-        set_api_error_details(
-            "Deep analysis",
-            {
-                "resource": "Deep analysis",
-                "reason": "empty_or_unusable_model_output",
-                "model": str(st.session_state.get("deep_analysis_model_used") or DEEP_ANALYSIS_OPENAI_MODEL),
-                "selected_language": selected_output_language,
-            },
-        )
-        set_api_error_message("Deep analysis finished without usable markdown output.")
-        deep_analysis_md = ""
 
-    deep_analysis_bundle = _normalize_text_bundle(st.session_state.get("deep_analysis_bundle", {}), st.session_state.get("deep_analysis_md", ""))
-    if deep_analysis_md.strip():
-        deep_analysis_bundle[selected_output_language] = deep_analysis_md
-    st.session_state["deep_analysis_bundle"] = deep_analysis_bundle
-    st.session_state["deep_analysis_md"] = str(deep_analysis_bundle.get(selected_output_language) or "")
-    st.session_state["deep_analysis_ran"] = bool(st.session_state["deep_analysis_md"].strip())
-    if deep_analysis_md.strip() and current_session_id and api_key:
-        persist_cached_session_safely(
-            api_key,
-            current_session_id,
-            deep_analysis_md=deep_analysis_md,
-            deep_analysis_bundle=deep_analysis_bundle,
-        )
-    st.session_state["deep_analysis_in_progress"] = False
-    st.rerun()
-
-if st.session_state.get("content_repurpose_in_progress", False):
-    transcript_payload = st.session_state.get("transcript_payload")
-    selected_output_language = st.session_state.get("content_repurpose_language", output_language_label)
-
-    if transcript_payload is None:
-        st.warning("Content repurposing requires a transcript.")
-        st.session_state["content_repurpose_in_progress"] = False
-        st.rerun()
-    if not api_analysis_key:
-        st.warning("Content repurposing skipped: missing `OPENAI_API_KEY` in environment.")
-        st.session_state["content_repurpose_in_progress"] = False
-        st.rerun()
-    existing_bundles = st.session_state.get("content_repurpose_bundle", {})
-    if isinstance(existing_bundles, dict):
-        existing_language_bundle = existing_bundles.get(selected_output_language, {})
-        if isinstance(existing_language_bundle, dict) and any(str(value or "").strip() for value in existing_language_bundle.values()):
-            st.session_state["content_repurpose_in_progress"] = False
-            st.rerun()
-
-    all_bundles = st.session_state.get("content_repurpose_bundle", {})
-    if not isinstance(all_bundles, dict):
-        all_bundles = {}
-    content_repurpose_bundle = {}
-    source_language, source_content_bundle = _get_alternate_language_bundle(all_bundles, selected_output_language)
+@app.post("/api/sessions/{session_id}/fetch")
+def fetch_session_workspace(session_id: str, request: FetchSessionRequest) -> Dict[str, Any]:
     try:
-        if source_content_bundle:
-            content_repurpose_bundle = translate_content_repurpose_bundle_with_openai(
-                api_key=api_analysis_key,
-                model=DEFAULT_OPENAI_MODEL,
-                source_bundle=source_content_bundle,
-                source_language=OUTPUT_LANGUAGE_MAP.get(source_language, source_language),
-                target_language=OUTPUT_LANGUAGE_MAP.get(selected_output_language, selected_output_language),
-            )
-        else:
-            transcript_text_for_repurpose = build_transcript_plain_text(transcript_payload)
-            content_repurpose_bundle = generate_content_repurpose_bundle_with_openai(
-                api_key=api_analysis_key,
-                model=DEFAULT_OPENAI_MODEL,
-                output_language=OUTPUT_LANGUAGE_MAP.get(selected_output_language, selected_output_language),
-                transcript_text=transcript_text_for_repurpose,
-            )
-    except requests.HTTPError as exc:
-        logger.exception("Content repurposing request failed")
-        set_api_error_details("Content repurposing", build_http_error_debug_details(exc, "Content repurposing"))
-        set_api_error_message(format_generic_http_error(exc, "Content repurposing"))
-        content_repurpose_bundle = {}
-    except requests.RequestException as exc:
-        logger.exception("Content repurposing network error")
-        set_api_error_details("Content repurposing", build_request_exception_debug_details(exc, "Content repurposing"))
-        set_api_error_message(f"Content repurposing network error: {exc}")
-        content_repurpose_bundle = {}
+        transcript_api_key = str(request.transcript_api_key or "").strip() or get_runtime_secret("API_AUTH_KEY", "")
+        return fetch_all_session_data(
+            api_key=request.api_key,
+            transcript_api_key=transcript_api_key,
+            session_id=session_id,
+            force_refresh=request.force_refresh,
+        )
+    except Exception as exc:
+        _raise_http_error("Session data", exc)
+        raise
 
-    has_generated_content = any(
-        isinstance(markdown, str) and markdown.strip()
-        for markdown in content_repurpose_bundle.values()
-    )
-    if has_generated_content:
-        all_bundles[selected_output_language] = content_repurpose_bundle
-    else:
-        all_bundles.pop(selected_output_language, None)
-    content_repurpose_md = "\n\n---\n\n".join(
-        markdown.strip()
-        for bundle in all_bundles.values()
-        if isinstance(bundle, dict)
-        for markdown in bundle.values()
-        if isinstance(markdown, str) and markdown.strip()
-    )
-    st.session_state["content_repurpose_md"] = content_repurpose_md
-    st.session_state["content_repurpose_bundle"] = all_bundles
-    st.session_state["content_repurpose_ran"] = bool(content_repurpose_md.strip())
-    st.session_state["content_repurpose_history"] = []
-    if current_session_id and api_key and isinstance(all_bundles, dict) and all_bundles:
-        persist_cached_session_safely(api_key, current_session_id, content_repurpose_bundle=all_bundles)
-    st.session_state["content_repurpose_in_progress"] = False
-    st.rerun()
+
+@app.post("/api/sessions/{session_id}/fetch-base")
+def fetch_session_base_workspace(session_id: str, request: FetchSessionRequest) -> Dict[str, Any]:
+    try:
+        return fetch_session_base_data(
+            api_key=request.api_key,
+            session_id=session_id,
+            force_refresh=request.force_refresh,
+        )
+    except Exception as exc:
+        _raise_http_error("Session overview", exc)
+        raise
+
+
+@app.post("/api/sessions/{session_id}/fetch-transcript")
+def fetch_session_transcript_workspace(session_id: str, request: FetchSessionRequest) -> Dict[str, Any]:
+    try:
+        transcript_api_key = str(request.transcript_api_key or "").strip() or get_runtime_secret("API_AUTH_KEY", "")
+        return fetch_session_transcript_data(
+            api_key=request.api_key,
+            transcript_api_key=transcript_api_key,
+            session_id=session_id,
+            force_refresh=request.force_refresh,
+        )
+    except Exception as exc:
+        _raise_http_error("Transcript", exc)
+        raise
+
+
+@app.post("/api/sessions/{session_id}/speaker-labels")
+def update_speaker_labels(session_id: str, request: SpeakerLabelsRequest) -> Dict[str, Any]:
+    try:
+        return save_speaker_labels(request.api_key, session_id, request.speaker_names)
+    except Exception as exc:
+        _raise_http_error("Speaker labels", exc)
+        raise
+
+
+@app.post("/api/sessions/{session_id}/analysis")
+def overall_analysis(session_id: str, request: AnalysisRequest) -> Dict[str, Any]:
+    try:
+        openai_api_key = get_runtime_secret("OPENAI_API_KEY", "")
+        return run_overall_analysis(openai_api_key, session_id, request.output_language)
+    except Exception as exc:
+        _raise_http_error("Analysis", exc)
+        raise
+
+
+@app.post("/api/sessions/{session_id}/deep-analysis")
+def deep_analysis(session_id: str, request: AnalysisRequest) -> Dict[str, Any]:
+    try:
+        openai_api_key = get_runtime_secret("OPENAI_API_KEY", "")
+        return run_deep_analysis(openai_api_key, session_id, request.output_language)
+    except Exception as exc:
+        _raise_http_error("Deep analysis", exc)
+        raise
+
+
+@app.get("/api/sessions/{session_id}/analysis-pdf")
+def analysis_pdf(session_id: str, kind: str = Query(...), language: str = Query("English")) -> Response:
+    try:
+        result = build_analysis_pdf(session_id, kind, language)
+        filename = str(result["filename"])
+        pdf_bytes = result["content"]
+        headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+        return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
+    except Exception as exc:
+        _raise_http_error("Analysis PDF", exc)
+        raise
+
+
+@app.post("/api/sessions/{session_id}/smart-recap")
+def smart_recap(session_id: str, request: SmartRecapRequest) -> Dict[str, Any]:
+    try:
+        openai_api_key = get_runtime_secret("OPENAI_API_KEY", "")
+        return run_smart_recap(openai_api_key, session_id, request.tone)
+    except Exception as exc:
+        _raise_http_error("Smart Recap", exc)
+        raise
+
+
+@app.get("/api/sessions/{session_id}/smart-recap-pdf")
+def smart_recap_pdf(session_id: str, tone: str = Query(...)) -> Response:
+    try:
+        result = build_smart_recap_pdf(session_id, tone)
+        filename = str(result["filename"])
+        pdf_bytes = result["content"]
+        headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+        return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
+    except Exception as exc:
+        _raise_http_error("Smart Recap PDF", exc)
+        raise
+
+
+@app.post("/api/sessions/{session_id}/content-repurposing")
+def content_repurposing(session_id: str, request: AnalysisRequest) -> Dict[str, Any]:
+    try:
+        openai_api_key = get_runtime_secret("OPENAI_API_KEY", "")
+        return run_content_repurposing(openai_api_key, session_id, request.output_language)
+    except Exception as exc:
+        _raise_http_error("Content Repurposing", exc)
+        raise
+
+
+@app.get("/api/sessions/{session_id}/content-repurposing-pdf")
+def content_repurposing_pdf(session_id: str, language: str = Query("English"), item: str = Query(...)) -> Response:
+    try:
+        result = build_content_repurposing_pdf(session_id, language, item)
+        filename = str(result["filename"])
+        pdf_bytes = result["content"]
+        headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+        return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
+    except Exception as exc:
+        _raise_http_error("Content Repurposing PDF", exc)
+        raise
+
+
+if FRONTEND_DIST_DIR.exists():
+    assets_dir = FRONTEND_DIST_DIR / "assets"
+    if assets_dir.exists():
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+
+    @app.get("/{full_path:path}")
+    def serve_frontend(full_path: str) -> Any:
+        requested_path = FRONTEND_DIST_DIR / full_path
+        if full_path and requested_path.exists() and requested_path.is_file():
+            return FileResponse(requested_path)
+        index_path = FRONTEND_DIST_DIR / "index.html"
+        if index_path.exists():
+            return FileResponse(index_path)
+        return JSONResponse({"message": "Frontend build not found."}, status_code=404)

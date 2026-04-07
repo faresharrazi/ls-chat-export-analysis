@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import logging
 from contextlib import contextmanager
 from typing import Any, Dict, Iterator, Optional
 
@@ -9,6 +10,7 @@ from psycopg.rows import dict_row
 
 
 DATABASE_URL_ENV_VARS = ("DATABASE_URL", "POSTGRES_URL", "RENDER_POSTGRES_URL")
+logger = logging.getLogger(__name__)
 
 
 def get_database_url() -> str:
@@ -130,36 +132,39 @@ def ensure_database_schema() -> None:
 def fetch_cached_session(api_key: str, session_id: str) -> Optional[Dict[str, Any]]:
     if not database_enabled() or not str(session_id or "").strip():
         return None
-
-    with get_db_connection() as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT
-                    account_key_hash,
-                    session_id,
-                    session_payload,
-                    chat_payload,
-                    questions_payload,
-                    transcript_payload,
-                    transcript_speaker_names,
-                    analysis_md,
-                    analysis_bundle,
-                    deep_analysis_md,
-                    deep_analysis_bundle,
-                    content_repurpose_bundle,
-                    smart_recap_bundle,
-                    created_at,
-                    updated_at
-                FROM session_cache
-                WHERE session_id = %s
-                ORDER BY updated_at DESC
-                LIMIT 1
-                """,
-                (str(session_id).strip(),),
-            )
-            row = cursor.fetchone()
-    return dict(row) if isinstance(row, dict) else None
+    try:
+        with get_db_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        account_key_hash,
+                        session_id,
+                        session_payload,
+                        chat_payload,
+                        questions_payload,
+                        transcript_payload,
+                        transcript_speaker_names,
+                        analysis_md,
+                        analysis_bundle,
+                        deep_analysis_md,
+                        deep_analysis_bundle,
+                        content_repurpose_bundle,
+                        smart_recap_bundle,
+                        created_at,
+                        updated_at
+                    FROM session_cache
+                    WHERE session_id = %s
+                    ORDER BY updated_at DESC
+                    LIMIT 1
+                    """,
+                    (str(session_id).strip(),),
+                )
+                row = cursor.fetchone()
+        return dict(row) if isinstance(row, dict) else None
+    except Exception:
+        logger.exception("Failed to read cached session for session_id=%s", str(session_id).strip())
+        return None
 
 
 def upsert_cached_session(api_key: str, session_id: str, **fields: Any) -> None:
@@ -201,15 +206,18 @@ def upsert_cached_session(api_key: str, session_id: str, **fields: Any) -> None:
 
     update_clauses.append("updated_at = NOW()")
 
-    with get_db_connection() as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                f"""
-                INSERT INTO session_cache ({", ".join(columns)})
-                VALUES ({", ".join(placeholders)})
-                ON CONFLICT (session_id)
-                DO UPDATE SET {", ".join(update_clauses)}
-                """,
-                insert_values,
-            )
-        connection.commit()
+    try:
+        with get_db_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    INSERT INTO session_cache ({", ".join(columns)})
+                    VALUES ({", ".join(placeholders)})
+                    ON CONFLICT (session_id)
+                    DO UPDATE SET {", ".join(update_clauses)}
+                    """,
+                    insert_values,
+                )
+            connection.commit()
+    except Exception:
+        logger.exception("Failed to upsert cached session for session_id=%s", session_id_value)

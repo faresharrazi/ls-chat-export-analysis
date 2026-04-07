@@ -148,9 +148,19 @@ def format_generic_http_error(exc: requests.HTTPError, resource_label: str) -> s
             details = ""
 
     if status_code in (401, 403):
+        openai_resources = {
+            "Analysis",
+            "Deep analysis",
+            "Analysis PDF",
+            "Smart Recap",
+            "Smart Recap PDF",
+            "Content Repurposing",
+            "Content Repurposing PDF",
+        }
+        credential_label = "OpenAI API key" if resource_label in openai_resources else "transcript API token"
         return (
             f"{resource_label} request was unauthorized (HTTP {status_code}). "
-            "Please check the configured transcript API token."
+            f"Please check the configured {credential_label}."
         )
     if status_code == 404:
         return (
@@ -1213,10 +1223,18 @@ def build_question_stats(questions_df: pd.DataFrame) -> Dict[str, Any]:
         top_askers = questions_df[asker_col].value_counts().head(10)
         stats["top_askers_by_question_count"] = {str(idx): int(val) for idx, val in top_askers.items()}
 
-    if "response" in questions_df.columns:
-        has_response = questions_df["response"].fillna("").astype(str).str.strip() != ""
-        stats["answered_questions"] = int(has_response.sum())
-        stats["unanswered_questions"] = int((~has_response).sum())
+    responder_col = None
+    if "answered_by" in questions_df.columns:
+        responder_col = "answered_by"
+    elif "responded_by" in questions_df.columns:
+        responder_col = "responded_by"
+    elif "response_author_id" in questions_df.columns:
+        responder_col = "response_author_id"
+
+    if responder_col is not None:
+        has_responder = questions_df[responder_col].fillna("").astype(str).str.strip() != ""
+        stats["answered_questions"] = int(has_responder.sum())
+        stats["unanswered_questions"] = int((~has_responder).sum())
 
     return stats
 
@@ -1337,6 +1355,24 @@ def _extract_transcript_words(transcript: Dict[str, Any]) -> List[Dict[str, Any]
             if not isinstance(word, dict):
                 continue
             words.append({**word, "_speaker": speaker})
+    if words:
+        return words
+
+    nested_result = transcript.get("result")
+    if isinstance(nested_result, dict):
+        nested_sentences = nested_result.get("sentences")
+        if isinstance(nested_sentences, list):
+            for sentence in nested_sentences:
+                if not isinstance(sentence, dict):
+                    continue
+                sentence_words = sentence.get("words")
+                if not isinstance(sentence_words, list):
+                    continue
+                speaker = _extract_speaker_value(sentence)
+                for word in sentence_words:
+                    if not isinstance(word, dict):
+                        continue
+                    words.append({**word, "_speaker": speaker})
     return words
 
 
@@ -2410,32 +2446,60 @@ def build_transcript_insights(transcript_payload: Dict[str, Any]) -> Dict[str, A
     strong_statement_pattern = re.compile(r"\b(?:important|key|must|need to|significant|critical|huge)\b", re.IGNORECASE)
     high_pace_threshold = _safe_quantile(pace_df["segment_wpm"], 0.9, 0.0) if not pace_df.empty else 0.0
     number_lookup = set()
+    numeric_signal_kinds = {"MONEY", "DATE_INTERVAL", "DURATION", "EVENT"}
     if not numbers_df.empty:
         for _, number_row in numbers_df.iterrows():
-            number_lookup.add((number_row.get("time_label"), number_row.get("context")))
+            row_kind = str(number_row.get("kind") or "").strip().upper()
+            if row_kind in numeric_signal_kinds:
+                number_lookup.add((number_row.get("time_label"), number_row.get("context")))
     entity_texts = set(named_entities_df["entity"].head(25).astype(str).tolist()) if not named_entities_df.empty else set()
     source_for_moments = sentence_df if not sentence_df.empty else ordered_df
     for _, row in source_for_moments.iterrows():
         text = str(row.get("sentence") or row.get("text") or "").strip()
         if not text:
             continue
+        normalized_text = re.sub(r"\s+", " ", text).strip()
+        word_count = len(re.findall(r"\b\w+\b", normalized_text))
+        alpha_word_count = len(re.findall(r"\b[a-zA-Z]{2,}\b", normalized_text))
+        if len(normalized_text) < 24 or word_count < 4 or alpha_word_count < 3:
+            continue
+
         score = 0
         reasons = []
-        if (format_seconds_label(_coerce_seconds(row.get("start_seconds"))), text[:180]) in number_lookup:
+        signal_count = 0
+
+        has_numbers_signal = (format_seconds_label(_coerce_seconds(row.get("start_seconds"))), text[:180]) in number_lookup
+        if has_numbers_signal:
             score += 2
             reasons.append("numbers")
-        if strong_statement_pattern.search(text):
+            signal_count += 1
+
+        has_strong_statement_signal = bool(strong_statement_pattern.search(text))
+        if has_strong_statement_signal:
             score += 2
             reasons.append("strong statement")
-        if entity_texts and any(entity.lower() in text.lower() for entity in list(entity_texts)[:10]):
+            signal_count += 1
+
+        has_named_entity_signal = entity_texts and any(entity.lower() in text.lower() for entity in list(entity_texts)[:10])
+        if has_named_entity_signal:
             score += 1
             reasons.append("named entity")
+
         pace_value = 0.0
         if row.get("duration_seconds") and row.get("word_count"):
             pace_value = (float(row.get("word_count")) / float(row.get("duration_seconds"))) * 60 if float(row.get("duration_seconds")) > 0 else 0.0
-        if pace_value >= high_pace_threshold and high_pace_threshold > 0:
+        has_pace_signal = pace_value >= high_pace_threshold and high_pace_threshold > 0
+        if has_pace_signal:
             score += 1
             reasons.append("pace spike")
+            signal_count += 1
+
+        if has_named_entity_signal and not (has_numbers_signal or has_strong_statement_signal or has_pace_signal):
+            continue
+
+        if signal_count < 2 and score < 3:
+            continue
+
         if score > 0:
             key_moment_rows.append(
                 {
@@ -2759,9 +2823,13 @@ def build_derived_stats(
     stats: Dict[str, Any] = {}
 
     if isinstance(chat_df, pd.DataFrame):
+        unique_authors = 0
+        if "author_id" in chat_df.columns:
+            author_series = chat_df["author_id"].fillna("").astype(str).str.strip()
+            unique_authors = int(author_series[author_series != ""].nunique())
         chat_stats: Dict[str, Any] = {
             "total_messages": int(len(chat_df.index)),
-            "unique_authors": int(chat_df["author_id"].nunique()) if "author_id" in chat_df.columns else 0,
+            "unique_authors": unique_authors,
         }
         if "created_at" in chat_df.columns:
             series = pd.to_datetime(chat_df["created_at"], utc=True, errors="coerce").dropna()

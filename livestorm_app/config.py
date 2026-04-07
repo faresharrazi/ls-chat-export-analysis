@@ -2,8 +2,14 @@ import base64
 import os
 from pathlib import Path
 
-import streamlit as st
-from streamlit.errors import StreamlitSecretNotFoundError
+try:
+    import streamlit as st
+    from streamlit.errors import StreamlitSecretNotFoundError
+except Exception:  # pragma: no cover - Streamlit is optional in the Vue/FastAPI setup
+    st = None
+
+    class StreamlitSecretNotFoundError(Exception):
+        pass
 
 API_BASE = "https://api.livestorm.co/v1"
 OPENAI_CHAT_COMPLETIONS_URL = "https://api.openai.com/v1/chat/completions"
@@ -70,6 +76,8 @@ def load_env_file(path: Path = ENV_PATH) -> None:
 
 
 def get_runtime_secret(name: str, default: str = "") -> str:
+    if st is None:
+        return os.getenv(name, default)
     try:
         return st.secrets.get(name, os.getenv(name, default))
     except StreamlitSecretNotFoundError:
@@ -78,6 +86,8 @@ def get_runtime_secret(name: str, default: str = "") -> str:
 
 def configure_page() -> None:
     load_env_file()
+    if st is None:
+        return
 
     page_config = {"page_title": "Livestorm Post Event Analysis", "layout": "wide"}
     if ICON_PATH.exists():
@@ -86,6 +96,8 @@ def configure_page() -> None:
 
 
 def apply_brand_styles() -> None:
+    if st is None:
+        return
     st.markdown(
         """
         <style>
@@ -250,6 +262,8 @@ def apply_brand_styles() -> None:
 
 
 def render_header() -> None:
+    if st is None:
+        return
     if HEADER_ICON_PATH.exists():
         header_icon_b64 = base64.b64encode(HEADER_ICON_PATH.read_bytes()).decode("ascii")
         st.markdown(

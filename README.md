@@ -1,71 +1,69 @@
 # Livestorm Session Workspace
 
-Streamlit app to:
-- Fetch Livestorm session chat messages (with pagination)
-- Fetch Livestorm session questions (with pagination)
-- Fetch transcript JSON from the transcript API by session ID via the async job API
-- Explore transcript, chat, and questions in dedicated expandable blocks
-- Clean and export messages/questions as CSV
-- Run OpenAI analysis on `Transcript`, `Chat + Questions`, or all three together
-- Run a dedicated `Deep Analysis` using transcript JSON, chat, and questions with a stronger technical prompt
-- Generate repurposed content such as summaries, email follow-ups, blog posts, and social posts in the selected output language
+Vue + FastAPI workspace to:
+- Fetch Livestorm session overview, chat, questions, and transcript data
+- Cache fetched sessions in Postgres by `session_id`
+- Explore each major area in its own routed frontend view
+- Run overall analysis, deep analysis, smart recap, and content repurposing workflows
+- Persist speaker labels alongside the cached session
 
 ## Quickstart
+
+Backend:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-streamlit run app.py
+uvicorn app:app --reload
 ```
 
-## OpenAI Analysis
+Frontend:
 
-1. Set `OPENAI_API_KEY` in environment/secrets.
-2. Set `API_AUTH_KEY` in environment/secrets for transcript fetches.
-3. Fetch one or more sources:
-   - `Fetch Chat & Questions`
-   - `Fetch Transcript`
-4. In the Analysis block, choose one of:
-   - `Transcript`
-   - `Chat & Questions`
-   - both together
-5. Click `Run analysis`.
+```bash
+cd frontend
+npm install
+npm run dev
+```
 
-The analysis sends:
-- `chat_api_response` and `questions_api_response` together when `Chat & Questions` is selected
-- `transcript_api_response` when transcript is selected
-- `derived_stats` for the selected sources
+## Backend API
 
-and renders markdown analysis in the dedicated Analysis block.
+The FastAPI backend exposes JSON endpoints for:
+- loading past event sessions
+- fetching and caching a session workspace
+- saving speaker labels
+- running overall analysis
+- running deep analysis
+- generating smart recap output
+- generating content repurposing bundles
 
 ## Project Structure
 
 ```text
 assets/
   icons/
+frontend/
+  src/
 livestorm_app/
+  api_logic.py
   config.py
-  renderers.py
+  db.py
   services.py
-  state.py
+  session_overview.py
 prompts/
 app.py
 README.md
 requirements.txt
 ```
 
-## UI Layout
+## Frontend Routes
 
-- `Transcript Block`: transcript metrics, silence and pacing charts, transcript viewer, JSON export
-- `Chat & Questions Block`: engagement charts, chat table, questions table, CSV exports
-- `Analysis Block`: source selection, language selection, markdown/PDF export
-- `Content Repurposing Block`: choose content type, choose output language, generate localized derivative content
-- Chart rendering is organized under:
-  - `livestorm_app/charts/transcript/`
-  - `livestorm_app/charts/chat_questions/`
-  - `livestorm_app/charts/cross/`
-  Each chart lives in its own `.py` file and users can choose which charts to display in the UI.
+- `/session-overview`
+- `/transcript`
+- `/chat-questions`
+- `/analysis`
+- `/smart-recap`
+- `/content-repurposing`
 
 ## Editable Prompt
 
@@ -84,10 +82,7 @@ You can change the analysis instructions without code edits:
 
 ## Notes
 
-- Provide your Livestorm API key and session ID in the sidebar.
-- OpenAI usage is optional; if no OpenAI key is provided, fetch/export still works.
-- Transcript fetches require `API_AUTH_KEY`.
-- Transcript fetches use `POST /api/transcribe/jobs` plus polling every 3 seconds for up to 15 minutes.
-- Transcript analytics assume the API returns timed utterances and word timestamps in the JSON payload.
-- Questions are never analyzed by themselves; they are always bundled with chat.
-- There is no guaranteed free OpenAI model; `gpt-4o-mini` is typically a low-cost option.
+- Set `OPENAI_API_KEY` for analysis, recap, and content generation.
+- Set `API_AUTH_KEY` for transcript fetching.
+- The frontend currently expects the backend at the same origin or proxied via Vite.
+- Node.js was not available in the current coding environment, so the Vue app was scaffolded but not built locally here.

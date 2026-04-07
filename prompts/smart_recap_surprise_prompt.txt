@@ -46,6 +46,17 @@ WRITING APPROACH:
 - Avoid sounding like a report or summary.
 - Each paragraph should bring a new angle or escalation.
 - Keep the tone confident, playful, and insightful.
+- The opening must feel immediate and alive, not corporate.
+- Start from a scene, a behavior, a tension, or a weirdly human moment.
+- Do not open with generic summary formulas like:
+  - "In this session..."
+  - "The session opened with..."
+  - "During this meeting..."
+  - "A recent internal meeting covered..."
+  - "Key updates were discussed..."
+- Do not open by listing agenda items or summarizing topics.
+- The first 1 to 2 sentences should make the reader feel dropped into the room.
+- Vary openings across outputs. Do not reuse the same intro pattern from prior recaps.
 
 ---
 
@@ -82,6 +93,7 @@ The output should:
 - include multiple small punchlines in early paragraphs
 - create a reading rhythm where the reader expects the twist
 - end with a memorable, slightly emotional or philosophical line
+- open with texture, not administration
 
 If it reads like a structured summary with jokes added, it is not good enough.
 
@@ -96,6 +108,7 @@ After writing the recap, you MUST do a silent internal review:
 - Ensure each paragraph has at least one strong punchline (except the final paragraph, which can be softer)
 - Strengthen contrast between human behavior and system reliability
 - Make sure the ending feels satisfying, not just funny
+- Rewrite the opening if it sounds like a meeting summary, internal memo, or corporate introduction
 
 Then output ONLY the improved version.
 
