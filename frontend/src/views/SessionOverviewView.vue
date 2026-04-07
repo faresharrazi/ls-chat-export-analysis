@@ -98,6 +98,21 @@ const tabs = [
   { id: "people", label: "People" },
   { id: "charts", label: "Charts" },
 ];
+
+const hasOverviewData = computed(
+  () =>
+    overviewRows.value.length > 0 ||
+    peopleRows.value.length > 0 ||
+    countryRows.value.length > 0 ||
+    roleRows.value.length > 0 ||
+    attendanceRows.value.length > 0 ||
+    engagementRows.value.length > 0 ||
+    Object.keys(stats.value || {}).length > 0,
+);
+
+const isOverviewLoading = computed(
+  () => Boolean(state.workspace) && state.loading.sessionFetch && !hasOverviewData.value,
+);
 </script>
 
 <template>
@@ -105,7 +120,7 @@ const tabs = [
     <h2>Session Overview</h2>
     <p class="page-description">High-level session context, attendee signals, and engagement snapshots.</p>
 
-    <template v-if="state.workspace">
+    <template v-if="state.workspace && hasOverviewData">
       <div class="metric-grid">
         <article class="metric-card metric-card-hero" v-for="metric in topMetrics" :key="metric.label">
           <span class="metric-label">{{ metric.label }}</span>
@@ -209,5 +224,12 @@ const tabs = [
         />
       </template>
     </template>
+    <section v-else-if="isOverviewLoading" class="panel loading-panel">
+      <div class="loading-indicator" aria-hidden="true"></div>
+      <div>
+        <h3 class="loading-title">Session Overview is loading</h3>
+        <p class="loading-copy">We’re loading the session context first so you can start reviewing the event as quickly as possible.</p>
+      </div>
+    </section>
   </section>
 </template>
