@@ -51,6 +51,7 @@ def ensure_database_schema() -> None:
                     chat_payload JSONB,
                     questions_payload JSONB,
                     transcript_payload JSONB,
+                    transcript_speaker_names JSONB,
                     analysis_md TEXT,
                     analysis_bundle JSONB,
                     deep_analysis_md TEXT,
@@ -79,6 +80,12 @@ def ensure_database_schema() -> None:
                 """
                 ALTER TABLE session_cache
                 ADD COLUMN IF NOT EXISTS deep_analysis_bundle JSONB
+                """
+            )
+            cursor.execute(
+                """
+                ALTER TABLE session_cache
+                ADD COLUMN IF NOT EXISTS transcript_speaker_names JSONB
                 """
             )
             cursor.execute(
@@ -135,6 +142,7 @@ def fetch_cached_session(api_key: str, session_id: str) -> Optional[Dict[str, An
                     chat_payload,
                     questions_payload,
                     transcript_payload,
+                    transcript_speaker_names,
                     analysis_md,
                     analysis_bundle,
                     deep_analysis_md,
@@ -163,6 +171,7 @@ def upsert_cached_session(api_key: str, session_id: str, **fields: Any) -> None:
         "chat_payload",
         "questions_payload",
         "transcript_payload",
+        "transcript_speaker_names",
         "analysis_md",
         "analysis_bundle",
         "deep_analysis_md",

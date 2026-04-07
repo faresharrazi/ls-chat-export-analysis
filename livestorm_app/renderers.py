@@ -648,6 +648,7 @@ def render_transcript_block(
     current_session_id: str,
     is_loading: bool = False,
     should_open: bool = False,
+    on_save_speaker_labels: Optional[Any] = None,
 ) -> None:
     with st.expander("Transcript", expanded=is_loading or should_open):
         if is_loading:
@@ -692,7 +693,10 @@ def render_transcript_block(
                     if save_speaker_labels and updated_map != current_speaker_map:
                         session_speaker_names[session_key] = updated_map
                         st.session_state["transcript_speaker_names"] = session_speaker_names
+                        if callable(on_save_speaker_labels):
+                            on_save_speaker_labels(session_key, updated_map)
                         current_speaker_map = updated_map
+                        st.rerun()
         transcript_insights = apply_speaker_name_map_to_insights(transcript_insights, current_speaker_map)
         summary = transcript_insights.get("summary", {})
         segments_df = transcript_insights.get("segments_df", pd.DataFrame())

@@ -208,6 +208,7 @@ def load_cached_session_into_state(api_key: str, session_id: str, cached_session
     chat_payload = cached_session.get("chat_payload")
     questions_payload = cached_session.get("questions_payload")
     transcript_payload = cached_session.get("transcript_payload")
+    transcript_speaker_names = cached_session.get("transcript_speaker_names")
     analysis_bundle = _normalize_text_bundle(cached_session.get("analysis_bundle"), str(cached_session.get("analysis_md") or ""))
     deep_analysis_bundle = _normalize_text_bundle(cached_session.get("deep_analysis_bundle"), str(cached_session.get("deep_analysis_md") or ""))
     content_repurpose_bundle = cached_session.get("content_repurpose_bundle")
@@ -235,6 +236,16 @@ def load_cached_session_into_state(api_key: str, session_id: str, cached_session
         st.session_state["last_fetched_transcript_signature"] = build_transcript_request_signature(str(session_id or ""))
         mark_analysis_source_defaults(st.session_state, include_transcript=True)
         st.session_state["analysis_include_transcript_pending"] = True
+    if isinstance(transcript_speaker_names, dict):
+        all_speaker_names = st.session_state.get("transcript_speaker_names", {})
+        if not isinstance(all_speaker_names, dict):
+            all_speaker_names = {}
+        all_speaker_names[str(session_id or "")] = {
+            str(speaker): str(label).strip()
+            for speaker, label in transcript_speaker_names.items()
+            if str(label).strip()
+        }
+        st.session_state["transcript_speaker_names"] = all_speaker_names
 
     st.session_state["analysis_bundle"] = analysis_bundle
     st.session_state["analysis_md"] = str(analysis_bundle.get(selected_analysis_language) or "")
@@ -260,6 +271,19 @@ def persist_cached_session_safely(api_key: str, session_id: str, **fields: Any) 
         upsert_cached_session(api_key, session_id, **fields)
     except Exception:
         logger.exception("Failed to persist cached session data", extra={"session_id": session_id, "field_names": list(fields.keys())})
+
+
+def persist_speaker_labels_for_session(api_key: str, session_id: str, speaker_names: Dict[str, str]) -> None:
+    normalized_map = {
+        str(speaker): str(label).strip()
+        for speaker, label in (speaker_names or {}).items()
+        if str(label).strip()
+    }
+    persist_cached_session_safely(
+        api_key,
+        session_id,
+        transcript_speaker_names=normalized_map,
+    )
 
 
 def refresh_fetch_cycle_state() -> None:
@@ -1068,6 +1092,11 @@ with main_col:
         current_session_id,
         is_loading=transcript_loading,
         should_open=bool(st.session_state.get("open_transcript_once", False)),
+        on_save_speaker_labels=(
+            (lambda session_id, speaker_names: persist_speaker_labels_for_session(api_key, session_id, speaker_names))
+            if api_key
+            else None
+        ),
     )
     render_chat_questions_block(
         df,
