@@ -87,11 +87,17 @@ def ensure_database_schema() -> None:
                 ON session_cache (account_key_hash)
                 """
             )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_session_cache_session_id
+                ON session_cache (session_id)
+                """
+            )
         connection.commit()
 
 
 def fetch_cached_session(api_key: str, session_id: str) -> Optional[Dict[str, Any]]:
-    if not database_enabled() or not str(api_key or "").strip() or not str(session_id or "").strip():
+    if not database_enabled() or not str(session_id or "").strip():
         return None
 
     with get_db_connection() as connection:
@@ -114,9 +120,11 @@ def fetch_cached_session(api_key: str, session_id: str) -> Optional[Dict[str, An
                     created_at,
                     updated_at
                 FROM session_cache
-                WHERE account_key_hash = %s AND session_id = %s
+                WHERE session_id = %s
+                ORDER BY updated_at DESC
+                LIMIT 1
                 """,
-                (build_account_key_hash(api_key), str(session_id).strip()),
+                (str(session_id).strip(),),
             )
             row = cursor.fetchone()
     return dict(row) if isinstance(row, dict) else None
@@ -142,30 +150,46 @@ def upsert_cached_session(api_key: str, session_id: str, **fields: Any) -> None:
     if not persisted_fields:
         return
 
-    columns = ["account_key_hash", "session_id", *persisted_fields.keys()]
-    values = [build_account_key_hash(api_key), str(session_id).strip()]
-    placeholders = ["%s", "%s"]
-    update_clauses = []
+    session_id_value = str(session_id).strip()
+    account_key_hash = build_account_key_hash(api_key)
+    update_clauses = ["account_key_hash = %s"]
+    update_values = [account_key_hash]
 
     for key, value in persisted_fields.items():
+        update_clauses.append(f"{key} = %s")
         if isinstance(value, (dict, list)):
-            values.append(json.dumps(value, ensure_ascii=False))
-            placeholders.append("%s::jsonb")
+            update_values.append(json.dumps(value, ensure_ascii=False))
         else:
-            values.append(value)
-            placeholders.append("%s")
-        update_clauses.append(f"{key} = EXCLUDED.{key}")
+            update_values.append(value)
 
     update_clauses.append("updated_at = NOW()")
 
-    sql = f"""
-        INSERT INTO session_cache ({", ".join(columns)})
-        VALUES ({", ".join(placeholders)})
-        ON CONFLICT (account_key_hash, session_id)
-        DO UPDATE SET {", ".join(update_clauses)}
-    """
-
     with get_db_connection() as connection:
         with connection.cursor() as cursor:
-            cursor.execute(sql, values)
+            cursor.execute(
+                f"""
+                UPDATE session_cache
+                SET {", ".join(update_clauses)}
+                WHERE session_id = %s
+                """,
+                [*update_values, session_id_value],
+            )
+            if cursor.rowcount == 0:
+                columns = ["account_key_hash", "session_id", *persisted_fields.keys()]
+                placeholders = ["%s", "%s"]
+                insert_values = [account_key_hash, session_id_value]
+                for value in persisted_fields.values():
+                    if isinstance(value, (dict, list)):
+                        insert_values.append(json.dumps(value, ensure_ascii=False))
+                        placeholders.append("%s::jsonb")
+                    else:
+                        insert_values.append(value)
+                        placeholders.append("%s")
+                cursor.execute(
+                    f"""
+                    INSERT INTO session_cache ({", ".join(columns)})
+                    VALUES ({", ".join(placeholders)})
+                    """,
+                    insert_values,
+                )
         connection.commit()
