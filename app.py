@@ -84,6 +84,14 @@ DEEP_ANALYSIS_FALLBACK_MODEL = "gpt-4o"
 job_manager = get_background_job_manager()
 
 TRANSCRIPT_POLL_INTERVAL_SECONDS = 1
+NAVIGATION_VIEWS = [
+    ("session-overview", "Session Overview"),
+    ("transcript", "Transcript"),
+    ("chat-questions", "Chat & Questions"),
+    ("analysis", "Analysis"),
+    ("smart-recap", "Smart Recap"),
+    ("content-repurposing", "Repurposing"),
+]
 
 
 def build_transcript_request_signature(session_id: str) -> str:
@@ -108,6 +116,17 @@ def set_api_error_message(message: str) -> None:
 def clear_api_error_details() -> None:
     st.session_state["last_api_error_details"] = None
     st.session_state["last_api_error_message"] = ""
+
+
+def get_current_view_slug() -> str:
+    default_view = NAVIGATION_VIEWS[0][0]
+    raw_value = str(st.query_params.get("view", default_view) or default_view).strip().lower()
+    valid_views = {slug for slug, _ in NAVIGATION_VIEWS}
+    return raw_value if raw_value in valid_views else default_view
+
+
+def set_current_view_slug(view_slug: str) -> None:
+    st.query_params["view"] = str(view_slug or NAVIGATION_VIEWS[0][0]).strip().lower()
 
 
 def render_api_error_details() -> None:
@@ -1079,59 +1098,109 @@ with main_col:
     transcript_available = isinstance(transcript_payload, dict)
     chat_available = isinstance(df, pd.DataFrame)
     questions_available = isinstance(questions_df, pd.DataFrame)
+    analyze_button = False
+    deep_analysis_button = False
+    smart_recap_button = None
+    content_repurpose_button = False
 
-    render_session_overview_block(
-        session_payload=session_payload,
-        current_session_id=current_session_id,
-        is_loading=session_overview_loading,
-        should_open=bool(st.session_state.get("open_session_overview_once", False)),
+    current_view_slug = get_current_view_slug()
+    st.markdown(
+        """
+        <style>
+        div[data-testid="stHorizontalBlock"] div[data-testid="column"] .stButton > button[kind] {
+          white-space: nowrap;
+          min-height: 2.7rem;
+          font-size: 0.92rem;
+          padding-left: 0.55rem;
+          padding-right: 0.55rem;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
     )
-    render_transcript_block(
-        transcript_payload,
-        transcript_text,
-        current_session_id,
-        is_loading=transcript_loading,
-        should_open=bool(st.session_state.get("open_transcript_once", False)),
-        on_save_speaker_labels=(
-            (lambda session_id, speaker_names: persist_speaker_labels_for_session(api_key, session_id, speaker_names))
-            if api_key
-            else None
-        ),
-    )
-    render_chat_questions_block(
-        df,
-        questions_df,
-        current_session_id,
-        is_loading=chat_questions_loading,
-        should_open=bool(st.session_state.get("open_chat_questions_once", False)),
-    )
-    analyze_button, deep_analysis_button = render_analysis_block(
-        current_session_id=current_session_id,
-        analysis_ran=analysis_ran,
-        analysis_md=analysis_md,
-        deep_analysis_ran=deep_analysis_ran,
-        deep_analysis_md=deep_analysis_md,
-        transcript_available=transcript_available,
-        chat_available=chat_available,
-        questions_available=questions_available,
-        transcript_payload=transcript_payload,
-        chat_df=df,
-        questions_df=questions_df,
-    )
-    smart_recap_button = render_smart_recap_block(
-        current_session_id=current_session_id,
-        transcript_available=transcript_available,
-        smart_recap_bundle=smart_recap_bundle,
-        smart_recap_ran=smart_recap_ran,
-    )
-    content_repurpose_button = render_content_repurpose_block(
-        current_session_id=current_session_id,
-        transcript_available=transcript_available,
-        chat_available=chat_available,
-        questions_available=questions_available,
-        content_repurpose_bundle=content_repurpose_bundle,
-        content_repurpose_ran=content_repurpose_ran,
-    )
+    nav_columns = st.columns([1.15, 1.0, 1.15, 1.0, 1.1, 1.0])
+    selected_view_slug = current_view_slug
+    for nav_column, (view_slug, view_label) in zip(nav_columns, NAVIGATION_VIEWS):
+        with nav_column:
+            if view_slug == current_view_slug:
+                st.button(
+                    view_label,
+                    key=f"nav_active_{view_slug}",
+                    type="primary",
+                    disabled=True,
+                    width="stretch",
+                )
+            else:
+                clicked = st.button(
+                    view_label,
+                    key=f"nav_{view_slug}",
+                    width="stretch",
+                )
+                if clicked:
+                    selected_view_slug = view_slug
+    if selected_view_slug != current_view_slug:
+        set_current_view_slug(selected_view_slug)
+        st.rerun()
+    st.markdown("<div style='height: 0.6rem;'></div>", unsafe_allow_html=True)
+
+    if selected_view_slug == "session-overview":
+        render_session_overview_block(
+            session_payload=session_payload,
+            current_session_id=current_session_id,
+            is_loading=session_overview_loading,
+            should_open=bool(st.session_state.get("open_session_overview_once", False)),
+        )
+    elif selected_view_slug == "transcript":
+        render_transcript_block(
+            transcript_payload,
+            transcript_text,
+            current_session_id,
+            is_loading=transcript_loading,
+            should_open=bool(st.session_state.get("open_transcript_once", False)),
+            on_save_speaker_labels=(
+                (lambda session_id, speaker_names: persist_speaker_labels_for_session(api_key, session_id, speaker_names))
+                if api_key
+                else None
+            ),
+        )
+    elif selected_view_slug == "chat-questions":
+        render_chat_questions_block(
+            df,
+            questions_df,
+            current_session_id,
+            is_loading=chat_questions_loading,
+            should_open=bool(st.session_state.get("open_chat_questions_once", False)),
+        )
+    elif selected_view_slug == "analysis":
+        analyze_button, deep_analysis_button = render_analysis_block(
+            current_session_id=current_session_id,
+            analysis_ran=analysis_ran,
+            analysis_md=analysis_md,
+            deep_analysis_ran=deep_analysis_ran,
+            deep_analysis_md=deep_analysis_md,
+            transcript_available=transcript_available,
+            chat_available=chat_available,
+            questions_available=questions_available,
+            transcript_payload=transcript_payload,
+            chat_df=df,
+            questions_df=questions_df,
+        )
+    elif selected_view_slug == "smart-recap":
+        smart_recap_button = render_smart_recap_block(
+            current_session_id=current_session_id,
+            transcript_available=transcript_available,
+            smart_recap_bundle=smart_recap_bundle,
+            smart_recap_ran=smart_recap_ran,
+        )
+    elif selected_view_slug == "content-repurposing":
+        content_repurpose_button = render_content_repurpose_block(
+            current_session_id=current_session_id,
+            transcript_available=transcript_available,
+            chat_available=chat_available,
+            questions_available=questions_available,
+            content_repurpose_bundle=content_repurpose_bundle,
+            content_repurpose_ran=content_repurpose_ran,
+        )
     st.session_state["open_session_overview_once"] = False
     st.session_state["open_transcript_once"] = False
     st.session_state["open_chat_questions_once"] = False

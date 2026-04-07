@@ -60,6 +60,25 @@ def _render_chart_picker(title: str, chart_specs: List[ChartSpec], default_keys:
     return [options[label] for label in selected_labels if label in options]
 
 
+def _render_main_section_header(title: str, description: str = "") -> None:
+    safe_title = html.escape(title)
+    safe_description = html.escape(description or "")
+    description_html = (
+        f'<div style="font-size: 1rem; color: #FFFFFF; margin-top: 0.2rem; line-height: 1.55;">{safe_description}</div>'
+        if safe_description
+        else ""
+    )
+    st.markdown(
+        f"""
+        <div style="margin: 0 0 1rem 0;">
+          <div style="font-size: 1.5rem; font-weight: 800; color: #FFFFFF; letter-spacing: -0.02em;">{safe_title}</div>
+          {description_html}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def _keep_analysis_panel_open() -> None:
     st.session_state["analysis_expander_open"] = True
 
@@ -482,7 +501,9 @@ def render_session_overview_block(
     is_loading: bool = False,
     should_open: bool = False,
 ) -> None:
-    with st.expander("Session Overview", expanded=is_loading or should_open):
+    section = st.container()
+    with section:
+        _render_main_section_header("Session Overview", "High-level session context, attendee signals, and engagement snapshots.")
         if is_loading:
             with st.spinner("Loading session overview..."):
                 st.caption("Session overview is loading...")
@@ -650,7 +671,9 @@ def render_transcript_block(
     should_open: bool = False,
     on_save_speaker_labels: Optional[Any] = None,
 ) -> None:
-    with st.expander("Transcript", expanded=is_loading or should_open):
+    section = st.container()
+    with section:
+        _render_main_section_header("Transcript", "Transcript text, highlights, and timing-based speaking diagnostics.")
         if is_loading:
             with st.spinner("Loading transcript..."):
                 st.caption("Transcript is loading...")
@@ -997,7 +1020,9 @@ def render_chat_questions_block(
     is_loading: bool = False,
     should_open: bool = False,
 ) -> None:
-    with st.expander("Chat & Questions", expanded=is_loading or should_open):
+    section = st.container()
+    with section:
+        _render_main_section_header("Chat & Questions", "Audience messages, submitted questions, and engagement activity over time.")
         if is_loading:
             with st.spinner("Loading chat & questions..."):
                 st.caption("Chat & Questions loading...")
@@ -1075,10 +1100,9 @@ def render_analysis_block(
     chat_df: Optional[pd.DataFrame] = None,
     questions_df: Optional[pd.DataFrame] = None,
 ) -> Tuple[bool, bool]:
-    analysis_expander_open = bool(
-        st.session_state.get("analysis_expander_open", False)
-    )
-    with st.expander("Analysis", expanded=analysis_expander_open):
+    section = st.container()
+    with section:
+        _render_main_section_header("Analysis", "Overall and deeper analysis generated from transcript, session, chat, and questions.")
         chat_questions_available = chat_available and questions_available
         analysis_available = bool(transcript_available or chat_questions_available)
         deep_analysis_available = bool(transcript_available and chat_available and questions_available)
@@ -1269,7 +1293,9 @@ def render_content_repurpose_block(
     content_repurpose_bundle: Dict[str, Dict[str, str]],
     content_repurpose_ran: bool,
 ) -> bool:
-    with st.expander("Content Repurposing", expanded=content_repurpose_ran):
+    section = st.container()
+    with section:
+        _render_main_section_header("Content Repurposing", "Turn the session into summary, blog, email, and social content.")
         all_languages_generated = bool(
             isinstance(content_repurpose_bundle, dict)
             and all(
@@ -1378,10 +1404,9 @@ def render_smart_recap_block(
     smart_recap_bundle: Dict[str, str],
     smart_recap_ran: bool,
 ) -> Optional[str]:
-    smart_recap_open = bool(
-        st.session_state.get("smart_recap_in_progress", False) or smart_recap_ran
-    )
-    with st.expander("Smart Recap", expanded=smart_recap_open):
+    section = st.container()
+    with section:
+        _render_main_section_header("Smart Recap", "Generate a lighter recap in professional, hype, or surprise mode.")
         if not transcript_available:
             st.caption("Fetch Data to enable Smart Recap.")
 
