@@ -235,6 +235,39 @@ def _normalize_markdown_for_display(markdown_text: str) -> str:
     return "\n".join(cleaned).strip()
 
 
+def _render_smart_recap_text_card(title: str, description: str, *, fallback_title: str) -> None:
+    effective_title = (title or "").strip() or fallback_title
+    effective_description = (description or "").strip()
+    safe_title = html.escape(effective_title)
+    safe_description = html.escape(effective_description).replace("\n", "<br>")
+
+    st.markdown(
+        f"""
+        <div style="
+            margin: 0.35rem 0 1rem 0;
+            padding: 1rem 1.1rem;
+            border: 1px solid #D7E2E8;
+            border-radius: 14px;
+            background: linear-gradient(180deg, #F9FBFC 0%, #F3F7F9 100%);
+        ">
+          <div style="
+              font-size: 1.2rem;
+              font-weight: 700;
+              line-height: 1.3;
+              color: #12262B;
+              margin-bottom: 0.7rem;
+          ">{safe_title}</div>
+          <div style="
+              font-size: 0.95rem;
+              line-height: 1.7;
+              color: #26414A;
+          ">{safe_description}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 DEEP_ANALYSIS_SECTION_ORDER: List[Tuple[str, str]] = [
     ("executive_summary", "Executive Summary"),
     ("session_scores", "Session Scores"),
@@ -1359,21 +1392,30 @@ def render_smart_recap_block(
                         pdf_filename = f"livestorm-smart-recap-{label.lower()}-{current_session_id}.pdf"
                         pdf_state_key = f"smart_recap_pdf_bytes_{current_session_id}_{key}"
                         pdf_button_key = f"smart_recap_prepare_pdf_{current_session_id}_{key}"
+                        cleaned_body = re.sub(r"^\s*Description\s*:?\s*", "", plain_body, flags=re.IGNORECASE).strip()
+                        _render_smart_recap_text_card(
+                            title=title,
+                            description=cleaned_body,
+                            fallback_title=label,
+                        )
 
-                        download_links: List[Tuple[str, bytes, str, str]] = [
-                            ("(MD)", markdown.encode("utf-8"), md_filename, "text/markdown")
-                        ]
-                        _render_inline_download_links(title if title else label, download_links)
-
-                        action_col, _ = st.columns([0.22, 0.78])
-                        with action_col:
+                        action_col_1, action_col_2, _ = st.columns([0.16, 0.16, 0.68])
+                        with action_col_1:
+                            st.download_button(
+                                "Download MD",
+                                data=markdown.encode("utf-8"),
+                                file_name=md_filename,
+                                mime="text/markdown",
+                                key=f"smart_recap_download_md_{current_session_id}_{key}",
+                            )
+                        with action_col_2:
                             prepare_pdf = st.button(
                                 "Prepare PDF",
                                 key=pdf_button_key,
                                 type="secondary",
                             )
                         if prepare_pdf and pdf_state_key not in st.session_state:
-                            pdf_source = plain_body if plain_body else _normalize_markdown_for_display(markdown)
+                            pdf_source = cleaned_body or _normalize_markdown_for_display(markdown)
                             try:
                                 st.session_state[pdf_state_key] = analysis_markdown_to_pdf_bytes(pdf_source, title=pdf_title)
                             except RuntimeError:
@@ -1388,7 +1430,6 @@ def render_smart_recap_block(
                                 mime="application/pdf",
                                 key=f"smart_recap_download_pdf_{current_session_id}_{key}",
                             )
-                        _render_readonly_text_block("", re.sub(r"^\s*Description\s*:?\s*", "", plain_body, flags=re.IGNORECASE))
                 except Exception:
                     st.error(f"{label} recap could not be displayed.")
 

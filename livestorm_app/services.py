@@ -2863,47 +2863,50 @@ def analyze_with_openai(
         {"role": "system", "content": system_prompt},
         {"role": "system", "content": f"Respond only in {output_language}."},
     ]
+    user_payload = {
+        "task": "Use this Livestorm session data to complete the requested task.",
+        "selected_sources": selected_sources,
+        "derived_stats": derived_stats,
+    }
     transcript_text = str(transcript_text or "").strip()
     if transcript_text:
-        messages.append({"role": "user", "content": transcript_text})
-        if session_payload is not None:
-            messages.append(
-                {
-                    "role": "user",
-                    "content": json.dumps({"session_api_response": session_payload}, ensure_ascii=False),
-                }
-            )
-    else:
-        user_payload = {
-            "task": "Use this Livestorm session data to complete the requested task.",
-            "selected_sources": selected_sources,
-            "derived_stats": derived_stats,
-        }
-        if raw_payload is not None:
-            user_payload["chat_api_response"] = raw_payload
-        if questions_payload is not None:
-            user_payload["questions_api_response"] = questions_payload
-        if transcript_payload is not None:
-            user_payload["transcript_api_response"] = transcript_payload
-            transcript_segments = transcript_payload.get("segments")
-            if isinstance(transcript_segments, list) and transcript_segments:
-                readable_segments: List[str] = []
-                for segment in transcript_segments[:20]:
-                    if not isinstance(segment, dict):
-                        continue
-                    speaker = str(segment.get("speaker") or "").strip()
-                    text = str(segment.get("text") or "").strip()
-                    start_label = str(segment.get("start_label") or "").strip()
-                    if not text:
-                        continue
-                    prefix_parts = [part for part in [start_label, speaker] if part]
-                    prefix = " | ".join(prefix_parts)
-                    readable_segments.append(f"{prefix}: {text}" if prefix else text)
-                if readable_segments:
-                    user_payload["transcript_excerpt"] = readable_segments
-        if session_payload is not None:
-            user_payload["session_api_response"] = session_payload
+        messages.append({"role": "user", "content": f"Transcript full text:\n\n{transcript_text}"})
+    if raw_payload is not None:
+        user_payload["chat_api_response"] = raw_payload
+    if questions_payload is not None:
+        user_payload["questions_api_response"] = questions_payload
+    if transcript_payload is not None:
+        user_payload["transcript_api_response"] = transcript_payload
+        transcript_segments = transcript_payload.get("segments")
+        if isinstance(transcript_segments, list) and transcript_segments:
+            readable_segments: List[str] = []
+            for segment in transcript_segments[:20]:
+                if not isinstance(segment, dict):
+                    continue
+                speaker = str(segment.get("speaker") or "").strip()
+                text = str(segment.get("text") or "").strip()
+                start_label = str(segment.get("start_label") or "").strip()
+                if not text:
+                    continue
+                prefix_parts = [part for part in [start_label, speaker] if part]
+                prefix = " | ".join(prefix_parts)
+                readable_segments.append(f"{prefix}: {text}" if prefix else text)
+            if readable_segments:
+                user_payload["transcript_excerpt"] = readable_segments
+    if session_payload is not None:
+        user_payload["session_api_response"] = session_payload
 
+    has_structured_context = any(
+        [
+            bool(selected_sources),
+            bool(derived_stats),
+            raw_payload is not None,
+            questions_payload is not None,
+            transcript_payload is not None,
+            session_payload is not None,
+        ]
+    )
+    if has_structured_context:
         messages.append({"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)})
 
     resp = requests.post(

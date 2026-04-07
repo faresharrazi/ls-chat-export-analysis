@@ -42,7 +42,6 @@ from livestorm_app.services import (
     build_smart_recap_prompt,
     build_compact_chat_payload_for_llm,
     build_compact_questions_payload_for_llm,
-    build_compact_transcript_payload_for_llm,
     build_deep_analysis_prompt,
     build_derived_stats,
     build_questions_df_from_payload,
@@ -81,7 +80,6 @@ logger = logging.getLogger(__name__)
 job_manager = get_background_job_manager()
 
 TRANSCRIPT_POLL_INTERVAL_SECONDS = 1
-SMART_RECAP_MAX_TRANSCRIPT_CHARS = 14000
 
 
 def build_transcript_request_signature(session_id: str) -> str:
@@ -90,22 +88,6 @@ def build_transcript_request_signature(session_id: str) -> str:
 
 def build_session_request_signature(session_id: str) -> str:
     return str(session_id).strip()
-
-
-def build_smart_recap_source_text(transcript_payload: Dict[str, Any], max_chars: int = SMART_RECAP_MAX_TRANSCRIPT_CHARS) -> str:
-    transcript_text = build_transcript_plain_text(transcript_payload)
-    if len(transcript_text) <= max_chars:
-        return transcript_text
-
-    head_chars = int(max_chars * 0.7)
-    tail_chars = max_chars - head_chars
-    head_text = transcript_text[:head_chars].strip()
-    tail_text = transcript_text[-tail_chars:].strip()
-    if not head_text:
-        return tail_text
-    if not tail_text:
-        return head_text
-    return f"{head_text}\n\n{tail_text}"
 
 
 def set_api_error_details(resource_label: str, details: dict | None) -> None:
@@ -1155,7 +1137,7 @@ if smart_recap_button:
             context={"tone": requested_tone},
             api_key=api_analysis_key,
             tone=requested_tone,
-            transcript_text=build_smart_recap_source_text(transcript_payload),
+            transcript_text=build_transcript_plain_text(transcript_payload),
         )
     st.rerun()
 
@@ -1215,7 +1197,7 @@ if st.session_state.get("analysis_in_progress", False):
                 derived_stats=derived_stats,
                 raw_payload=build_compact_chat_payload_for_llm(df) if "chat" in selected_sources and isinstance(df, pd.DataFrame) else None,
                 questions_payload=build_compact_questions_payload_for_llm(questions_df) if "questions" in selected_sources and isinstance(questions_df, pd.DataFrame) else None,
-                transcript_payload=build_compact_transcript_payload_for_llm(transcript_payload) if "transcript" in selected_sources and isinstance(transcript_payload, dict) else None,
+                transcript_text=build_transcript_plain_text(transcript_payload) if "transcript" in selected_sources and isinstance(transcript_payload, dict) else "",
                 session_payload=build_compact_session_payload_for_llm(session_payload) if isinstance(session_payload, dict) else None,
             )
     except requests.HTTPError as exc:
@@ -1289,7 +1271,7 @@ if st.session_state.get("deep_analysis_in_progress", False):
                 derived_stats=derived_stats,
                 raw_payload=build_compact_chat_payload_for_llm(df, max_rows=80),
                 questions_payload=build_compact_questions_payload_for_llm(questions_df, max_rows=40),
-                transcript_payload=build_compact_transcript_payload_for_llm(transcript_payload, max_segments=60),
+                transcript_payload=transcript_payload,
                 session_payload=build_compact_session_payload_for_llm(session_payload) if isinstance(session_payload, dict) else None,
                 max_tokens=2200,
             )
