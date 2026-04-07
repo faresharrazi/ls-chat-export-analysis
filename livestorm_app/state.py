@@ -45,6 +45,7 @@ SESSION_DEFAULTS = {
     "analysis_include_chat_questions": False,
     "analysis_include_transcript": False,
     "analysis_include_transcript_pending": False,
+    "analysis_expander_open": False,
     "transcript_job_id": "",
     "transcript_job_status": "",
     "transcript_job_started_at": 0.0,
@@ -56,11 +57,15 @@ SESSION_DEFAULTS = {
     "smart_recap_in_progress": False,
     "smart_recap_in_progress_tone": "",
     "smart_recap_job_id": "",
+    "smart_recap_active_tone": "professional",
     "transcript_speaker_names": {},
     "load_event_sessions_in_progress": False,
     "last_fetched_chat_session_id": "",
     "last_fetched_session_overview_id": "",
     "last_fetched_transcript_signature": "",
+    "open_session_overview_once": False,
+    "open_chat_questions_once": False,
+    "open_transcript_once": False,
     "last_api_error_details": None,
     "last_api_error_message": "",
 }
@@ -109,6 +114,7 @@ def reset_chat_question_state() -> None:
     st.session_state["analysis_include_chat_questions"] = False
     st.session_state["last_fetched_chat_session_id"] = ""
     st.session_state["chat_fetch_job_id"] = ""
+    st.session_state["open_chat_questions_once"] = False
 
 
 def reset_session_overview_state() -> None:
@@ -116,6 +122,7 @@ def reset_session_overview_state() -> None:
     st.session_state["session_fetch_in_progress"] = False
     st.session_state["session_fetch_job_id"] = ""
     st.session_state["last_fetched_session_overview_id"] = ""
+    st.session_state["open_session_overview_once"] = False
 
 
 def reset_transcript_state() -> None:
@@ -127,3 +134,4 @@ def reset_transcript_state() -> None:
     st.session_state["transcript_job_id"] = ""
     st.session_state["transcript_job_status"] = ""
     st.session_state["transcript_job_started_at"] = 0.0
+    st.session_state["open_transcript_once"] = False

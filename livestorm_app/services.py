@@ -937,6 +937,22 @@ def _extract_chat_completion_text(payload: Dict[str, Any]) -> str:
     return ""
 
 
+def _build_chat_completions_payload(
+    model: str,
+    messages: List[Dict[str, str]],
+    temperature: float,
+    max_tokens: int,
+) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "model": model,
+        "temperature": temperature,
+        "messages": messages,
+    }
+    token_param_name = "max_completion_tokens" if str(model or "").strip().startswith("gpt-5") else "max_tokens"
+    payload[token_param_name] = max_tokens
+    return payload
+
+
 def translate_markdown_with_openai(
     api_key: str,
     model: str,
@@ -963,12 +979,12 @@ def translate_markdown_with_openai(
     resp = requests.post(
         OPENAI_CHAT_COMPLETIONS_URL,
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        json={
-            "model": model,
-            "temperature": 0.1,
-            "max_tokens": max_tokens,
-            "messages": messages,
-        },
+        json=_build_chat_completions_payload(
+            model=model,
+            messages=messages,
+            temperature=0.1,
+            max_tokens=max_tokens,
+        ),
         timeout=120,
     )
     resp.raise_for_status()
@@ -1023,12 +1039,12 @@ def translate_content_repurpose_bundle_with_openai(
         resp = requests.post(
             OPENAI_CHAT_COMPLETIONS_URL,
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json={
-                "model": model,
-                "temperature": 0.1,
-                "max_tokens": 12000,
-                "messages": messages + extra_messages,
-            },
+            json=_build_chat_completions_payload(
+                model=model,
+                messages=messages + extra_messages,
+                temperature=0.1,
+                max_tokens=12000,
+            ),
             timeout=120,
         )
         resp.raise_for_status()
@@ -1078,12 +1094,12 @@ def generate_content_repurpose_bundle_with_openai(
         resp = requests.post(
             OPENAI_CHAT_COMPLETIONS_URL,
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json={
-                "model": model,
-                "temperature": 0.2,
-                "max_tokens": 12000,
-                "messages": messages + extra_messages,
-            },
+            json=_build_chat_completions_payload(
+                model=model,
+                messages=messages + extra_messages,
+                temperature=0.2,
+                max_tokens=12000,
+            ),
             timeout=120,
         )
         resp.raise_for_status()
@@ -2893,12 +2909,12 @@ def analyze_with_openai(
     resp = requests.post(
         OPENAI_CHAT_COMPLETIONS_URL,
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        json={
-            "model": model,
-            "temperature": 0.2,
-            "max_tokens": max_tokens,
-            "messages": messages,
-        },
+        json=_build_chat_completions_payload(
+            model=model,
+            messages=messages,
+            temperature=0.2,
+            max_tokens=max_tokens,
+        ),
         timeout=120,
     )
     resp.raise_for_status()

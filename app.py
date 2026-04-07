@@ -323,7 +323,6 @@ def run_smart_recap_job(
     api_key: str,
     tone: str,
     transcript_text: str,
-    session_payload: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     started_at = time.perf_counter()
     try:
@@ -335,7 +334,6 @@ def run_smart_recap_job(
             output_language="English",
             selected_sources=[],
             derived_stats={},
-            session_payload=session_payload,
             transcript_text=transcript_text,
             max_tokens=900,
         )
@@ -364,6 +362,9 @@ def apply_smart_recap_job_result(job_result: Dict[str, Any]) -> None:
     if not job_result.get("ok"):
         set_api_error_details("Smart Recap", job_result.get("details"))
         set_api_error_message(str(job_result.get("message") or "Smart Recap request failed."))
+        tone = str(job_result.get("tone") or st.session_state.get("smart_recap_in_progress_tone") or "").strip().lower()
+        if tone in {"professional", "hype", "surprise"}:
+            st.session_state["smart_recap_active_tone"] = tone
         st.session_state["smart_recap_in_progress"] = False
         st.session_state["smart_recap_in_progress_tone"] = ""
         st.session_state["smart_recap_job_id"] = ""
@@ -376,6 +377,7 @@ def apply_smart_recap_job_result(job_result: Dict[str, Any]) -> None:
     markdown = str(job_result.get("markdown") or "").strip()
     if tone in {"professional", "hype", "surprise"} and markdown:
         smart_recap_bundle[tone] = markdown
+        st.session_state["smart_recap_active_tone"] = tone
 
     st.session_state["smart_recap_bundle"] = smart_recap_bundle
     st.session_state["smart_recap_ran"] = bool(
@@ -419,6 +421,7 @@ def apply_chat_questions_job_result(job_result: Dict[str, Any]) -> None:
     st.session_state["questions_df"] = job_result.get("questions_df")
     st.session_state["current_session_id"] = job_result.get("session_id", "")
     st.session_state["last_fetched_chat_session_id"] = job_result.get("session_id", "")
+    st.session_state["open_chat_questions_once"] = True
     mark_analysis_source_defaults(st.session_state, include_chat=True)
     if isinstance(st.session_state.get("questions_df"), pd.DataFrame):
         mark_analysis_source_defaults(st.session_state, include_questions=True)
@@ -460,6 +463,7 @@ def apply_session_overview_job_result(job_result: Dict[str, Any]) -> None:
     st.session_state["session_payload"] = session_payload if isinstance(session_payload, dict) else None
     st.session_state["current_session_id"] = session_id
     st.session_state["last_fetched_session_overview_id"] = build_session_request_signature(session_id)
+    st.session_state["open_session_overview_once"] = True
     st.session_state["session_fetch_in_progress"] = False
     st.session_state["session_fetch_job_id"] = ""
     refresh_fetch_cycle_state()
@@ -484,6 +488,7 @@ def apply_transcript_success(session_id: str, transcript_payload: Dict[str, Any]
     st.session_state["transcript_job_id"] = ""
     st.session_state["transcript_job_status"] = "completed"
     st.session_state["transcript_job_started_at"] = 0.0
+    st.session_state["open_transcript_once"] = True
     refresh_fetch_cycle_state()
     api_key = st.session_state.get("api_key_input", os.getenv("LS_API_KEY", ""))
     if session_id and api_key:
@@ -971,10 +976,17 @@ if fetch_data_button:
     clear_analysis_output()
     clear_api_error_details()
     clear_background_notice()
+    st.session_state["analysis_expander_open"] = True
+    st.session_state["open_session_overview_once"] = True
+    st.session_state["open_transcript_once"] = True
+    st.session_state["open_chat_questions_once"] = True
     if previous_session_id and previous_session_id != active_session_id:
         reset_session_overview_state()
         reset_chat_question_state()
         reset_transcript_state()
+        st.session_state["open_session_overview_once"] = True
+        st.session_state["open_transcript_once"] = True
+        st.session_state["open_chat_questions_once"] = True
 
     if not api_key or not transcript_api_key or not active_session_id:
         st.error("Please provide the Livestorm API key, transcript API key, and a valid session selection.")
@@ -1062,21 +1074,21 @@ with main_col:
         session_payload=session_payload,
         current_session_id=current_session_id,
         is_loading=session_overview_loading,
+        should_open=bool(st.session_state.get("open_session_overview_once", False)),
     )
     render_transcript_block(
         transcript_payload,
         transcript_text,
         current_session_id,
         is_loading=transcript_loading,
+        should_open=bool(st.session_state.get("open_transcript_once", False)),
     )
-    render_chat_questions_block(df, questions_df, current_session_id, is_loading=chat_questions_loading)
-    content_repurpose_button = render_content_repurpose_block(
-        current_session_id=current_session_id,
-        transcript_available=transcript_available,
-        chat_available=chat_available,
-        questions_available=questions_available,
-        content_repurpose_bundle=content_repurpose_bundle,
-        content_repurpose_ran=content_repurpose_ran,
+    render_chat_questions_block(
+        df,
+        questions_df,
+        current_session_id,
+        is_loading=chat_questions_loading,
+        should_open=bool(st.session_state.get("open_chat_questions_once", False)),
     )
     analyze_button, deep_analysis_button = render_analysis_block(
         current_session_id=current_session_id,
@@ -1097,6 +1109,17 @@ with main_col:
         smart_recap_bundle=smart_recap_bundle,
         smart_recap_ran=smart_recap_ran,
     )
+    content_repurpose_button = render_content_repurpose_block(
+        current_session_id=current_session_id,
+        transcript_available=transcript_available,
+        chat_available=chat_available,
+        questions_available=questions_available,
+        content_repurpose_bundle=content_repurpose_bundle,
+        content_repurpose_ran=content_repurpose_ran,
+    )
+    st.session_state["open_session_overview_once"] = False
+    st.session_state["open_transcript_once"] = False
+    st.session_state["open_chat_questions_once"] = False
 
 if analyze_button:
     st.session_state["analysis_in_progress"] = True
@@ -1122,6 +1145,8 @@ if smart_recap_button:
     else:
         clear_api_error_details()
         clear_background_notice()
+        st.session_state["analysis_expander_open"] = False
+        st.session_state["smart_recap_active_tone"] = requested_tone
         st.session_state["smart_recap_in_progress"] = True
         st.session_state["smart_recap_in_progress_tone"] = requested_tone
         st.session_state["smart_recap_job_id"] = job_manager.submit(
@@ -1130,7 +1155,6 @@ if smart_recap_button:
             context={"tone": requested_tone},
             api_key=api_analysis_key,
             tone=requested_tone,
-            session_payload=build_compact_session_payload_for_llm(session_payload) if isinstance(session_payload, dict) else None,
             transcript_text=build_smart_recap_source_text(transcript_payload),
         )
     st.rerun()
