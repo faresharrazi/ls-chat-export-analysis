@@ -1,0 +1,15 @@
+.git
+.gitignore
+.env
+.venv
+__pycache__
+*.pyc
+output
+frontend/node_modules
+frontend/dist
+node_modules
+dist
+package-lock.json
+frontend/.vite
+frontend/.DS_Store
+.DS_Store

@@ -26,6 +26,41 @@ npm install
 npm run dev
 ```
 
+## Render Deployment
+
+This repo is set up to deploy to Render as a single web service:
+
+- FastAPI serves the API routes
+- FastAPI also serves the built Vue frontend from `frontend/dist`
+- Render only needs to run the Docker image
+
+Recommended Render settings:
+
+- Environment: `Docker`
+- Build Command: none
+- Start Command: none
+  Docker uses the `CMD` from [Dockerfile](/Users/fares/Code/chat-analysis/Dockerfile)
+
+Required environment variables on Render:
+
+- `OPENAI_API_KEY`
+- `API_AUTH_KEY`
+- the Postgres connection variables used by [db.py](/Users/fares/Code/chat-analysis/livestorm_app/db.py)
+- optionally `LS_API_KEY` if you want a server-side default in local-style flows
+
+Local Docker test:
+
+```bash
+docker build -t stormiq .
+docker run --rm -p 10000:10000 --env-file .env stormiq
+```
+
+Then open:
+
+```text
+http://localhost:10000
+```
+
 ## Backend API
 
 The FastAPI backend exposes JSON endpoints for:
@@ -84,5 +119,5 @@ You can change the analysis instructions without code edits:
 
 - Set `OPENAI_API_KEY` for analysis, recap, and content generation.
 - Set `API_AUTH_KEY` for transcript fetching.
-- The frontend currently expects the backend at the same origin or proxied via Vite.
-- Node.js was not available in the current coding environment, so the Vue app was scaffolded but not built locally here.
+- In local dev, Vite proxies `/api` and `/brand-assets` to the FastAPI server.
+- In production, FastAPI serves the built frontend directly from `frontend/dist`.

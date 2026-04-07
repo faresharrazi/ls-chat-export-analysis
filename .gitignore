@@ -4,3 +4,8 @@ __pycache__/
 *.pyc
 output/
 .DS_Store
+frontend/node_modules/
+frontend/dist/
+node_modules/
+dist/
+package-lock.json
