@@ -12,7 +12,13 @@ TRANSCRIPT_JOBS_API_URL = f"{TRANSCRIPT_API_URL}/jobs"
 DEFAULT_PAGE_SIZE = 100
 MAX_PAGES = 1000
 START_PAGE_NUMBER = 0
+
+# OpenAI model configuration by feature.
+# Tweak these constants to change which model each workflow uses.
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
+DEEP_ANALYSIS_OPENAI_MODEL = "gpt-4o"
+SMART_RECAP_OPENAI_MODEL = "gpt-5.4-mini"
+
 PROMPTS_DIR = Path("prompts")
 ANALYSIS_BASE_PROMPT_PATH = PROMPTS_DIR / "analysis_base_prompt.txt"
 ANALYSIS_CHAT_PROMPT_PATH = PROMPTS_DIR / "analysis_chat_prompt.txt"

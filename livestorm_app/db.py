@@ -47,6 +47,7 @@ def ensure_database_schema() -> None:
                 CREATE TABLE IF NOT EXISTS session_cache (
                     account_key_hash TEXT NOT NULL,
                     session_id TEXT NOT NULL,
+                    session_payload JSONB,
                     chat_payload JSONB,
                     questions_payload JSONB,
                     transcript_payload JSONB,
@@ -60,6 +61,12 @@ def ensure_database_schema() -> None:
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     PRIMARY KEY (account_key_hash, session_id)
                 )
+                """
+            )
+            cursor.execute(
+                """
+                ALTER TABLE session_cache
+                ADD COLUMN IF NOT EXISTS session_payload JSONB
                 """
             )
             cursor.execute(
@@ -94,6 +101,7 @@ def fetch_cached_session(api_key: str, session_id: str) -> Optional[Dict[str, An
                 SELECT
                     account_key_hash,
                     session_id,
+                    session_payload,
                     chat_payload,
                     questions_payload,
                     transcript_payload,
@@ -119,6 +127,7 @@ def upsert_cached_session(api_key: str, session_id: str, **fields: Any) -> None:
         return
 
     allowed_fields = {
+        "session_payload",
         "chat_payload",
         "questions_payload",
         "transcript_payload",

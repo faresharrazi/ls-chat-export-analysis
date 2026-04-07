@@ -11,6 +11,7 @@ import pandas as pd
 import streamlit as st
 
 from livestorm_app.charts.chat_questions import CHAT_QUESTION_CHARTS
+from livestorm_app.charts.common import brand_bar_chart, render_plotly_or_fallback
 from livestorm_app.charts.common import ChartSpec
 from livestorm_app.charts.cross import CROSS_CHARTS, DEFAULT_CROSS_CHART_KEYS
 from livestorm_app.charts.transcript import (
@@ -29,6 +30,7 @@ from livestorm_app.config import (
     SMART_RECAP_PROFESSIONAL_ICON_PATH,
     SMART_RECAP_SURPRISE_ICON_PATH,
 )
+from livestorm_app.session_overview import build_session_overview_data
 from livestorm_app.services import (
     analysis_markdown_to_pdf_bytes,
     apply_speaker_name_map_to_insights,
@@ -387,6 +389,171 @@ def _render_deep_analysis_sections(markdown_text: str, current_session_id: str, 
     for tab, (_, _, content) in zip(section_tabs, sections):
         with tab:
             st.markdown(content)
+
+
+def render_session_overview_block(
+    session_payload: Optional[Dict[str, Any]],
+    current_session_id: str,
+    is_loading: bool = False,
+) -> None:
+    with st.expander("Session Overview", expanded=bool(session_payload) or is_loading):
+        if is_loading:
+            with st.spinner("Loading session overview..."):
+                st.caption("Session overview is loading...")
+        if not isinstance(session_payload, dict):
+            if not is_loading:
+                st.caption("Fetch session overview data to unlock high-level session context and attendee insights.")
+            return
+
+        overview = build_session_overview_data(session_payload)
+        stats = overview.get("stats", {})
+        overview_df = overview.get("overview_df", pd.DataFrame())
+        people_df = overview.get("people_df", pd.DataFrame())
+        country_df = overview.get("country_df", pd.DataFrame())
+        role_df = overview.get("role_df", pd.DataFrame())
+        attendance_distribution_df = overview.get("attendance_distribution_df", pd.DataFrame())
+        engagement_top_df = overview.get("engagement_top_df", pd.DataFrame())
+
+        registrants = int(stats.get("registrants_count") or 0)
+        attendees = int(stats.get("attendees_count") or 0)
+        replay_viewers = int(stats.get("replay_viewers_count") or 0)
+        total_messages = int(stats.get("total_messages_count") or 0)
+        total_questions = int(stats.get("total_questions_count") or 0)
+        attendance_rate = stats.get("attendance_rate_pct")
+
+        metric_col1, metric_col2, metric_col3, metric_col4, metric_col5, metric_col6 = st.columns(6)
+        metric_col1.metric("Registrants", f"{registrants}")
+        metric_col2.metric("Attendees", f"{attendees}")
+        metric_col3.metric("Attendance Rate", f"{attendance_rate}%" if attendance_rate is not None else "n/a")
+        metric_col4.metric("Replay Viewers", f"{replay_viewers}")
+        metric_col5.metric("Chat Messages", f"{total_messages}")
+        metric_col6.metric("Questions", f"{total_questions}")
+
+        summary_tab, people_tab, charts_tab = st.tabs(["Summary", "People", "Charts"])
+
+        with summary_tab:
+            session_timestamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+            _render_text_download_header(
+                "Session payload",
+                "(JSON)",
+                data=json.dumps(session_payload, ensure_ascii=False, indent=2).encode("utf-8"),
+                filename=f"livestorm-session-overview-{current_session_id}-{session_timestamp}.json",
+                mime="application/json",
+                key=f"session_overview_json_download_{current_session_id}",
+            )
+            if isinstance(overview_df, pd.DataFrame) and not overview_df.empty:
+                st.dataframe(overview_df, use_container_width=True, hide_index=True)
+            if isinstance(engagement_top_df, pd.DataFrame) and not engagement_top_df.empty:
+                top_people_df = engagement_top_df[
+                    [
+                        column for column in [
+                            "full_name",
+                            "company",
+                            "job_title",
+                            "attendance_duration_label",
+                            "messages_count",
+                            "questions_count",
+                            "up_votes_count",
+                            "engagement_score",
+                        ] if column in engagement_top_df.columns
+                    ]
+                ].copy()
+                _render_section_download_header(
+                    "Most Engaged People",
+                    top_people_df,
+                    f"livestorm-session-engagement-{current_session_id}.csv",
+                    key=f"session_engagement_csv_{current_session_id}",
+                )
+                st.dataframe(top_people_df, use_container_width=True, hide_index=True)
+
+        with people_tab:
+            if isinstance(people_df, pd.DataFrame) and not people_df.empty:
+                people_export_df = people_df[
+                    [
+                        column for column in [
+                            "full_name",
+                            "email",
+                            "company",
+                            "job_title",
+                            "role",
+                            "attended",
+                            "attendance_rate",
+                            "attendance_duration_label",
+                            "has_viewed_replay",
+                            "ip_country_name",
+                            "ip_city",
+                            "messages_count",
+                            "questions_count",
+                            "up_votes_count",
+                        ] if column in people_df.columns
+                    ]
+                ].copy()
+                _render_section_download_header(
+                    "People",
+                    people_export_df,
+                    f"livestorm-session-people-{current_session_id}.csv",
+                    key=f"session_people_csv_{current_session_id}",
+                )
+                st.dataframe(people_export_df, use_container_width=True, hide_index=True)
+            else:
+                st.caption("No people details are available in this session payload.")
+
+        with charts_tab:
+            chart_col1, chart_col2 = st.columns(2)
+            with chart_col1:
+                if isinstance(country_df, pd.DataFrame) and not country_df.empty:
+                    country_chart = brand_bar_chart(
+                        country_df,
+                        "ip_country_name",
+                        "people_count",
+                        "Country",
+                        "People",
+                        ["attendees"],
+                    )
+                    st.markdown("**Attendance By Country**")
+                    render_plotly_or_fallback(
+                        country_chart,
+                        fallback_df=country_df,
+                        fallback_columns=["ip_country_name", "people_count", "attendees"],
+                    )
+                else:
+                    st.caption("Country data is not available for this session.")
+            with chart_col2:
+                if isinstance(role_df, pd.DataFrame) and not role_df.empty:
+                    role_chart = brand_bar_chart(
+                        role_df,
+                        "role",
+                        "people_count",
+                        "Role",
+                        "People",
+                        [],
+                    )
+                    st.markdown("**People By Role**")
+                    render_plotly_or_fallback(
+                        role_chart,
+                        fallback_df=role_df,
+                        fallback_columns=["role", "people_count"],
+                    )
+                else:
+                    st.caption("Role data is not available for this session.")
+
+            if isinstance(attendance_distribution_df, pd.DataFrame) and not attendance_distribution_df.empty:
+                attendance_chart = brand_bar_chart(
+                    attendance_distribution_df,
+                    "attendance_band",
+                    "people_count",
+                    "Attendance Band",
+                    "People",
+                    [],
+                )
+                st.markdown("**Attendance Rate Distribution**")
+                render_plotly_or_fallback(
+                    attendance_chart,
+                    fallback_df=attendance_distribution_df,
+                    fallback_columns=["attendance_band", "people_count"],
+                )
+            else:
+                st.caption("Attendance distribution is not available for this session.")
 
 
 def render_transcript_block(

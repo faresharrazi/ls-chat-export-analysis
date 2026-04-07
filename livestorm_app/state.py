@@ -10,6 +10,9 @@ EVENT_ID_PATTERN = SESSION_ID_PATTERN
 SESSION_DEFAULTS = {
     "analysis_in_progress": False,
     "fetch_in_progress": False,
+    "session_payload": None,
+    "session_fetch_in_progress": False,
+    "session_fetch_job_id": "",
     "chat_payload": None,
     "chat_df": None,
     "analysis_md": "",
@@ -56,6 +59,7 @@ SESSION_DEFAULTS = {
     "transcript_speaker_names": {},
     "load_event_sessions_in_progress": False,
     "last_fetched_chat_session_id": "",
+    "last_fetched_session_overview_id": "",
     "last_fetched_transcript_signature": "",
     "last_api_error_details": None,
     "last_api_error_message": "",
@@ -105,6 +109,13 @@ def reset_chat_question_state() -> None:
     st.session_state["analysis_include_chat_questions"] = False
     st.session_state["last_fetched_chat_session_id"] = ""
     st.session_state["chat_fetch_job_id"] = ""
+
+
+def reset_session_overview_state() -> None:
+    st.session_state["session_payload"] = None
+    st.session_state["session_fetch_in_progress"] = False
+    st.session_state["session_fetch_job_id"] = ""
+    st.session_state["last_fetched_session_overview_id"] = ""
 
 
 def reset_transcript_state() -> None:

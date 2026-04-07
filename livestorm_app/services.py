@@ -33,6 +33,7 @@ from livestorm_app.config import (
     START_PAGE_NUMBER,
     TRANSCRIPT_JOBS_API_URL,
 )
+from livestorm_app.session_overview import build_session_stats
 
 
 logger = logging.getLogger(__name__)
@@ -550,6 +551,18 @@ def fetch_session_questions(key: str, session: str, page_size: int = DEFAULT_PAG
     final_payload["pages_fetched"] = pages_fetched
     final_payload["requested_page_size"] = page_size
     return final_payload
+
+
+def fetch_session_details(key: str, session: str) -> Dict[str, Any]:
+    resp = requests.get(
+        f"{API_BASE}/sessions/{session}",
+        headers=build_headers(key),
+        params={"include": "people"},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    payload = resp.json()
+    return payload if isinstance(payload, dict) else {"data": payload}
 
 
 def fetch_event_past_sessions(key: str, event: str, page_size: int = DEFAULT_PAGE_SIZE) -> Dict[str, Any]:
@@ -2717,6 +2730,7 @@ def build_derived_stats(
     chat_df: Optional[pd.DataFrame] = None,
     questions_df: Optional[pd.DataFrame] = None,
     transcript_payload: Optional[Dict[str, Any]] = None,
+    session_payload: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     stats: Dict[str, Any] = {}
 
@@ -2748,6 +2762,8 @@ def build_derived_stats(
         stats["questions"] = build_question_stats(questions_df)
     if isinstance(transcript_payload, dict):
         stats["transcript"] = build_transcript_stats(transcript_payload)
+    if isinstance(session_payload, dict):
+        stats["session"] = build_session_stats(session_payload)
     return stats
 
 
@@ -2823,6 +2839,7 @@ def analyze_with_openai(
     raw_payload: Optional[Dict[str, Any]] = None,
     questions_payload: Optional[Dict[str, Any]] = None,
     transcript_payload: Optional[Dict[str, Any]] = None,
+    session_payload: Optional[Dict[str, Any]] = None,
     transcript_text: str = "",
     max_tokens: int = 2500,
 ) -> str:
@@ -2833,6 +2850,13 @@ def analyze_with_openai(
     transcript_text = str(transcript_text or "").strip()
     if transcript_text:
         messages.append({"role": "user", "content": transcript_text})
+        if session_payload is not None:
+            messages.append(
+                {
+                    "role": "user",
+                    "content": json.dumps({"session_api_response": session_payload}, ensure_ascii=False),
+                }
+            )
     else:
         user_payload = {
             "task": "Use this Livestorm session data to complete the requested task.",
@@ -2861,6 +2885,8 @@ def analyze_with_openai(
                     readable_segments.append(f"{prefix}: {text}" if prefix else text)
                 if readable_segments:
                     user_payload["transcript_excerpt"] = readable_segments
+        if session_payload is not None:
+            user_payload["session_api_response"] = session_payload
 
         messages.append({"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)})
 
