@@ -55,7 +55,15 @@ function setSource(source) {
           <span>{{ connectedBadgeLabel }}</span>
         </div>
         <div class="oauth-connected-title">Connected with Livestorm</div>
-        <button class="secondary oauth-disconnect-button" @click="emit('logout')">Disconnect</button>
+        <button
+          class="secondary oauth-disconnect-button"
+          type="button"
+          aria-label="Disconnect from Livestorm"
+          title="Disconnect"
+          @click="emit('logout')"
+        >
+          <span class="oauth-disconnect-icon" aria-hidden="true"></span>
+        </button>
       </div>
     </div>
 

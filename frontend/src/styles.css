@@ -37,10 +37,15 @@ textarea {
   min-height: 100vh;
   width: 100%;
   max-width: 100%;
+  transition: grid-template-columns 180ms ease;
 }
 
 .layout-home {
   grid-template-columns: 1fr;
+}
+
+.layout-sidebar-collapsed {
+  grid-template-columns: 96px 1fr;
 }
 
 .sidebar {
@@ -51,12 +56,58 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: 1.25rem;
+  position: relative;
+  transition: padding 180ms ease;
+}
+
+.sidebar.collapsed {
+  padding: 1rem 1rem;
+  align-items: center;
 }
 
 .sidebar-brand {
   display: flex;
   gap: 1rem;
   align-items: center;
+  width: 100%;
+}
+
+.sidebar-brand.collapsed {
+  justify-content: flex-start;
+  gap: 0.85rem;
+}
+
+.sidebar-toggle {
+  width: 2.35rem;
+  height: 2.35rem;
+  border-radius: 999px;
+  border: 1px solid rgba(164, 211, 224, 0.2);
+  background: rgba(17, 34, 39, 0.94);
+  color: #eef8fb;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: transform 140ms ease, border-color 140ms ease, background 140ms ease, box-shadow 140ms ease;
+}
+
+.sidebar-toggle:hover {
+  transform: translateY(-1px);
+  border-color: rgba(134, 216, 233, 0.38);
+  box-shadow: 0 10px 22px rgba(0, 0, 0, 0.16);
+}
+
+.sidebar-toggle-inside {
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+.sidebar.collapsed .sidebar-toggle-inside {
+  margin-left: 0;
+}
+
+.layout-sidebar-collapsed .main-content {
+  padding-left: 2.2rem;
 }
 
 .brand-logo {
@@ -1123,6 +1174,44 @@ textarea {
 
 .oauth-disconnect-button {
   margin-top: 0.4rem;
+  width: 2.5rem;
+  height: 2.5rem;
+  min-height: 2.5rem;
+  padding: 0;
+  border-radius: 999px;
+  justify-self: end;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.oauth-disconnect-icon {
+  position: relative;
+  width: 0.95rem;
+  height: 0.95rem;
+  display: inline-block;
+}
+
+.oauth-disconnect-icon::before {
+  content: "";
+  position: absolute;
+  inset: 0.18rem 0.12rem 0.18rem 0.28rem;
+  border: 1.8px solid currentColor;
+  border-left: 0;
+  border-radius: 0.12rem;
+  opacity: 0.92;
+}
+
+.oauth-disconnect-icon::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 0.6rem;
+  height: 0.6rem;
+  border-top: 1.8px solid currentColor;
+  border-right: 1.8px solid currentColor;
+  transform: translateY(-50%) rotate(45deg);
 }
 
 .events-toolbar {
@@ -1327,9 +1416,18 @@ textarea {
     grid-template-columns: 1fr;
   }
 
+  .layout-sidebar-collapsed {
+    grid-template-columns: 1fr;
+  }
+
   .sidebar {
     border-right: 0;
     border-bottom: 1px solid rgba(173, 221, 231, 0.12);
+  }
+
+  .sidebar.collapsed {
+    padding: 0.8rem 1rem;
+    align-items: flex-end;
   }
 
   .overview-chart-grid {

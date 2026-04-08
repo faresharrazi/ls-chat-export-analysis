@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { RouterLink, RouterView, useRoute, useRouter } from "vue-router";
 import { api } from "./api";
 import FetchSessionForm from "./components/FetchSessionForm.vue";
@@ -19,6 +19,7 @@ const route = useRoute();
 const router = useRouter();
 const logoUrl = "/brand-assets/icons/Icon-Livestorm-Tertiary-Light.png";
 const hasEvents = computed(() => state.workspaceEvents.length > 0);
+const sidebarCollapsed = ref(false);
 
 const navItems = [
   { to: "/events", label: "Events", key: "events" },
@@ -120,27 +121,42 @@ async function handleFetchEventsClick() {
     // The workspace store already surfaces a friendly message in the sidebar.
   }
 }
+
+function toggleSidebar() {
+  sidebarCollapsed.value = !sidebarCollapsed.value;
+}
 </script>
 
 <template>
-  <div class="layout">
-    <aside class="sidebar">
-      <div class="sidebar-brand">
+  <div class="layout" :class="{ 'layout-sidebar-collapsed': sidebarCollapsed }">
+    <aside class="sidebar" :class="{ collapsed: sidebarCollapsed }">
+      <div class="sidebar-brand" :class="{ collapsed: sidebarCollapsed }">
         <img :src="logoUrl" alt="Livestorm" class="brand-logo" />
-        <div class="brand-copy">
+        <div v-if="!sidebarCollapsed" class="brand-copy">
           <h1>StormIQ</h1>
         </div>
+        <button
+          type="button"
+          class="sidebar-toggle sidebar-toggle-inside"
+          :aria-expanded="String(!sidebarCollapsed)"
+          :aria-label="sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'"
+          @click="toggleSidebar"
+        >
+          <span aria-hidden="true">{{ sidebarCollapsed ? "›" : "‹" }}</span>
+        </button>
       </div>
 
-      <FetchSessionForm
-        :state="state"
-        @fetch="handleFetchClick"
-        @fetch-events="handleFetchEventsClick"
-        @connect="handleConnectClick"
-        @logout="handleLogoutClick"
-      />
+      <template v-if="!sidebarCollapsed">
+        <FetchSessionForm
+          :state="state"
+          @fetch="handleFetchClick"
+          @fetch-events="handleFetchEventsClick"
+          @connect="handleConnectClick"
+          @logout="handleLogoutClick"
+        />
 
-      <p v-if="state.error" class="error-text">{{ state.error }}</p>
+        <p v-if="state.error" class="error-text">{{ state.error }}</p>
+      </template>
     </aside>
 
     <main class="main-content">
