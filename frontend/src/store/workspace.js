@@ -76,11 +76,16 @@ async function wrapCall(flag, fn) {
 
 function applyBootstrap(payload) {
   const defaultApiKey = String(payload?.defaults?.apiKey || "").trim();
+  const connectedUser = payload?.auth?.connectedUser || null;
+  state.auth.oauthEnabled = Boolean(payload?.auth?.oauthEnabled) || Boolean(connectedUser);
+  state.auth.connectedUser = connectedUser;
+  if (state.auth.oauthEnabled) {
+    state.apiKey = "";
+    return;
+  }
   if (defaultApiKey && !state.apiKey) {
     state.apiKey = defaultApiKey;
   }
-  state.auth.oauthEnabled = Boolean(payload?.auth?.oauthEnabled);
-  state.auth.connectedUser = payload?.auth?.connectedUser || null;
 }
 
 function resetWorkspace() {

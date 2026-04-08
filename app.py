@@ -161,14 +161,15 @@ def healthcheck() -> Dict[str, str]:
 
 @app.get("/api/bootstrap")
 def bootstrap_defaults(request: Request) -> Dict[str, Any]:
+    auth = _get_bootstrap_auth(request)
     default_api_key = ""
-    if ENV_PATH.exists() and not oauth_enabled():
+    if ENV_PATH.exists() and not auth.get("oauthEnabled"):
         default_api_key = get_runtime_secret("LS_API_KEY", "")
     return {
         "defaults": {
             "apiKey": default_api_key,
         },
-        "auth": _get_bootstrap_auth(request),
+        "auth": auth,
     }
 
 
@@ -245,10 +246,11 @@ def event_sessions(request: EventSessionsRequest, http_request: Request) -> Dict
 
 
 @app.post("/api/workspace-events")
-def workspace_events(request: WorkspaceEventsRequest) -> Dict[str, Any]:
+def workspace_events(request: WorkspaceEventsRequest, http_request: Request) -> Dict[str, Any]:
     try:
+        api_key = _resolve_livestorm_auth(request.api_key, http_request)
         return fetch_available_events(
-            request.api_key,
+            api_key,
             page_number=request.page_number,
             page_size=request.page_size,
             title=request.title,

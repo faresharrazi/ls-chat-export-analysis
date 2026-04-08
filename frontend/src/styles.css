@@ -1095,6 +1095,28 @@ textarea {
   color: rgba(233, 244, 247, 0.7);
 }
 
+.oauth-user-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  justify-self: start;
+  padding: 0.34rem 0.6rem;
+  border-radius: 999px;
+  background: rgba(126, 228, 180, 0.12);
+  border: 1px solid rgba(126, 228, 180, 0.2);
+  color: #dff8ea;
+  font-size: 0.84rem;
+  font-weight: 600;
+}
+
+.oauth-user-badge-dot {
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 999px;
+  background: #7ee4b4;
+  box-shadow: 0 0 0 4px rgba(126, 228, 180, 0.12);
+}
+
 .oauth-connected-meta {
   color: #e9f4f7;
 }

@@ -187,17 +187,28 @@ def _extract_profile(me_payload: Dict[str, Any]) -> Dict[str, Any]:
     attributes = attributes if isinstance(attributes, dict) else {}
     organization = attributes.get("organization")
     organization = organization if isinstance(organization, dict) else {}
+    resource_type = str(data.get("type") or "").strip()
     first_name = str(attributes.get("first_name") or "").strip()
     last_name = str(attributes.get("last_name") or "").strip()
     full_name = f"{first_name} {last_name}".strip()
+    organization_id = str(organization.get("id") or "").strip()
+    organization_name = str(organization.get("name") or "").strip()
+
+    if resource_type == "organizations":
+        organization_id = str(data.get("id") or "").strip()
+        organization_name = str(attributes.get("name") or organization_name).strip()
+        if not full_name:
+            full_name = organization_name
+
     return {
         "user_id": str(data.get("id") or "").strip(),
         "email": str(attributes.get("email") or "").strip(),
         "first_name": first_name,
         "last_name": last_name,
         "full_name": full_name,
-        "organization_id": str(organization.get("id") or "").strip(),
-        "organization_name": str(organization.get("name") or "").strip(),
+        "organization_id": organization_id,
+        "organization_name": organization_name,
+        "resource_type": resource_type,
         "raw": me_payload,
     }
 
@@ -280,5 +291,6 @@ def get_connection_identity(connection: Optional[Dict[str, Any]]) -> Optional[Di
         "email": str(connection.get("email") or profile.get("email") or "").strip(),
         "fullName": str(profile.get("full_name") or "").strip(),
         "organizationName": str(profile.get("organization_name") or "").strip(),
+        "resourceType": str(profile.get("resource_type") or "").strip(),
         "userId": str(connection.get("user_id") or profile.get("user_id") or "").strip(),
     }

@@ -9,10 +9,17 @@ const props = defineProps({
 });
 
 const emit = defineEmits(["fetch", "fetch-events", "connect", "logout"]);
-const isOAuthMode = computed(() => props.state.auth?.oauthEnabled);
+const isOAuthMode = computed(() => Boolean(props.state.auth?.oauthEnabled || props.state.auth?.connectedUser));
 const isConnected = computed(() => Boolean(props.state.auth?.connectedUser));
 const canUseLivestormAuth = computed(() => (isOAuthMode.value ? isConnected.value : Boolean(props.state.apiKey)));
 const activeSource = ref("session");
+const connectedBadgeLabel = computed(
+  () =>
+    props.state.auth?.connectedUser?.organizationName ||
+    props.state.auth?.connectedUser?.fullName ||
+    props.state.auth?.connectedUser?.email ||
+    "Connected"
+);
 
 watch(
   () => props.state.inputMode,
@@ -43,11 +50,26 @@ function setSource(source) {
         Connect with Livestorm
       </button>
       <div v-else class="oauth-connected-card">
+        <div class="oauth-user-badge">
+          <span class="oauth-user-badge-dot" aria-hidden="true"></span>
+          <span>{{ connectedBadgeLabel }}</span>
+        </div>
         <div class="oauth-connected-title">Connected with Livestorm</div>
         <div class="oauth-connected-meta">
-          <strong>{{ props.state.auth.connectedUser.fullName || props.state.auth.connectedUser.email }}</strong>
+          <strong>{{
+            props.state.auth.connectedUser.organizationName ||
+            props.state.auth.connectedUser.fullName ||
+            props.state.auth.connectedUser.email
+          }}</strong>
         </div>
-        <div v-if="props.state.auth.connectedUser.organizationName" class="oauth-connected-meta">
+        <div
+          v-if="
+            props.state.auth.connectedUser.organizationName &&
+            props.state.auth.connectedUser.organizationName !==
+              (props.state.auth.connectedUser.fullName || props.state.auth.connectedUser.email)
+          "
+          class="oauth-connected-meta"
+        >
           {{ props.state.auth.connectedUser.organizationName }}
         </div>
         <button class="secondary oauth-disconnect-button" @click="emit('logout')">Disconnect</button>
