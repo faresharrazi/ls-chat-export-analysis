@@ -15,6 +15,7 @@ from livestorm_app.api_logic import (
     build_analysis_pdf,
     build_content_repurposing_pdf,
     build_smart_recap_pdf,
+    fetch_available_events,
     fetch_all_session_data,
     fetch_session_base_data,
     fetch_session_transcript_data,
@@ -42,6 +43,14 @@ BRAND_ASSETS_DIR = BASE_DIR / "assets"
 class EventSessionsRequest(BaseModel):
     api_key: str = Field(..., alias="apiKey")
     event_id: str = Field(..., alias="eventId")
+
+
+class WorkspaceEventsRequest(BaseModel):
+    api_key: str = Field(..., alias="apiKey")
+    page_number: int = Field(0, alias="pageNumber")
+    page_size: int = Field(20, alias="pageSize")
+    title: str = Field("", alias="title")
+    scheduling_status: str = Field("", alias="schedulingStatus")
 
 
 class FetchSessionRequest(BaseModel):
@@ -119,6 +128,21 @@ def event_sessions(request: EventSessionsRequest) -> Dict[str, Any]:
         return fetch_event_sessions(request.api_key, request.event_id)
     except Exception as exc:
         _raise_http_error("Event sessions", exc)
+        raise
+
+
+@app.post("/api/workspace-events")
+def workspace_events(request: WorkspaceEventsRequest) -> Dict[str, Any]:
+    try:
+        return fetch_available_events(
+            request.api_key,
+            page_number=request.page_number,
+            page_size=request.page_size,
+            title=request.title,
+            scheduling_status=request.scheduling_status,
+        )
+    except Exception as exc:
+        _raise_http_error("Workspace events", exc)
         raise
 
 

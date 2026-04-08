@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from "vue-router";
 import HomeView from "./views/HomeView.vue";
+import EventsView from "./views/EventsView.vue";
 import SessionOverviewView from "./views/SessionOverviewView.vue";
 import TranscriptView from "./views/TranscriptView.vue";
 import ChatQuestionsView from "./views/ChatQuestionsView.vue";
@@ -9,6 +10,7 @@ import ContentRepurposingView from "./views/ContentRepurposingView.vue";
 
 const routes = [
   { path: "/", component: HomeView },
+  { path: "/events", component: EventsView },
   { path: "/session-overview", component: SessionOverviewView },
   { path: "/transcript", component: TranscriptView },
   { path: "/chat-questions", component: ChatQuestionsView },

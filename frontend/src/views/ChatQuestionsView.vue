@@ -279,7 +279,12 @@ const missingAudienceSignalMessage = computed(() => {
   if (!hasChatData.value) {
     return "This session has no chat messages. Many events only collect questions, and the transcript can still be rendered and analyzed normally.";
   }
-  return "This session has no submitted questions. Many events only have chat activity, and the transcript can still be rendered and analyzed normally.";
+  return "";
+});
+
+const questionsHelperMessage = computed(() => {
+  if (hasQuestionData.value) return "";
+  return "This session has no submitted questions. That is common for many events. Chat activity and the transcript can still provide useful analysis for the session.";
 });
 </script>
 
@@ -335,6 +340,10 @@ const missingAudienceSignalMessage = computed(() => {
       </template>
 
       <template v-else-if="activeTab === 'questions'">
+        <section v-if="questionsHelperMessage" class="panel helper-panel">
+          <p class="helper-text">{{ questionsHelperMessage }}</p>
+        </section>
+
         <div class="panel-heading panel-heading-inline table-toolbar-panel" v-if="questionsTableRows.length">
           <div class="panel-heading-inline-title">
             <h3>Questions</h3>

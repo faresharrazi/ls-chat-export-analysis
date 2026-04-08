@@ -219,6 +219,14 @@ def extract_sessions(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     return []
 
 
+def extract_events(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    if isinstance(payload, dict) and isinstance(payload.get("data"), list):
+        return payload["data"]
+    if isinstance(payload, list):
+        return payload
+    return []
+
+
 def _format_unix_label(value: Any) -> str:
     try:
         if value in (None, "", 0):
@@ -254,6 +262,43 @@ def build_event_session_options(payload: Dict[str, Any]) -> List[Dict[str, str]]
         started_label = _format_unix_label(attrs.get("started_at") or attrs.get("estimated_started_at"))
         title = name if name else "Untitled session"
         options.append({"id": row["id"], "label": f"{started_label} - {title} ({attendees} attendees)"})
+    return options
+
+
+def build_workspace_event_options(payload: Dict[str, Any]) -> List[Dict[str, str]]:
+    event_items = extract_events(payload)
+    sortable: List[Dict[str, Any]] = []
+    options: List[Dict[str, str]] = []
+    for item in event_items:
+        if not isinstance(item, dict):
+            continue
+        event_id = str(item.get("id") or "").strip()
+        if not event_id:
+            continue
+        attrs = item.get("attributes")
+        attrs = attrs if isinstance(attrs, dict) else {}
+        updated_at = attrs.get("updated_at") or attrs.get("published_at") or attrs.get("created_at") or 0
+        sortable.append({"id": event_id, "attributes": attrs, "updated_at": updated_at})
+
+    sortable.sort(key=lambda row: row.get("updated_at") or 0, reverse=True)
+    for row in sortable:
+        attrs = row["attributes"]
+        title = str(attrs.get("title") or "").strip() or "Untitled event"
+        sessions_count = attrs.get("sessions_count", "n/a")
+        updated_label = _format_unix_label(attrs.get("updated_at") or attrs.get("published_at") or attrs.get("created_at"))
+        scheduling_status = str(attrs.get("scheduling_status") or "").strip()
+        language = str(attrs.get("language") or "").strip()
+        options.append(
+            {
+                "id": row["id"],
+                "label": f"{title} ({sessions_count} sessions) · {updated_label}",
+                "title": title,
+                "scheduling_status": scheduling_status,
+                "language": language,
+                "sessions_count": str(sessions_count),
+                "updated_label": updated_label,
+            }
+        )
     return options
 
 
@@ -578,6 +623,42 @@ def fetch_event_past_sessions(key: str, event: str, page_size: int = DEFAULT_PAG
     final_payload["pages_fetched"] = pages_fetched
     final_payload["requested_page_size"] = page_size
     return final_payload
+
+
+def fetch_workspace_events_page(
+    key: str,
+    page_number: int = START_PAGE_NUMBER,
+    page_size: int = 20,
+    title: str = "",
+    scheduling_status: str = "",
+) -> Dict[str, Any]:
+    url = f"{API_BASE}/events"
+    headers = build_headers(key)
+    params: Dict[str, Any] = {"page[number]": page_number, "page[size]": page_size}
+    normalized_title = str(title or "").strip()
+    normalized_status = str(scheduling_status or "").strip()
+    if normalized_title:
+        params["filter[title]"] = normalized_title
+    if normalized_status:
+        params["filter[scheduling_status]"] = normalized_status
+    resp = requests.get(
+        url,
+        headers=headers,
+        params=params,
+        timeout=30,
+    )
+    resp.raise_for_status()
+    payload = resp.json()
+    if not isinstance(payload, dict):
+        payload = {"data": extract_events(payload)}
+
+    payload["pages_fetched"] = 1
+    payload["requested_page_size"] = page_size
+    payload["requested_page_number"] = page_number
+    payload["requested_title"] = normalized_title
+    payload["requested_scheduling_status"] = normalized_status
+    payload["next_page"] = _extract_next_page(payload)
+    return payload
 
 
 def fetch_chat_and_questions_bundle(key: str, session_id: str) -> Dict[str, Any]:

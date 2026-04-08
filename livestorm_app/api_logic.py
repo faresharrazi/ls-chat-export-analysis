@@ -23,6 +23,7 @@ from livestorm_app.services import (
     build_deep_analysis_questions_payload_for_llm,
     build_derived_stats,
     build_event_session_options,
+    build_workspace_event_options,
     build_questions_df_from_payload,
     build_request_exception_debug_details,
     build_http_error_debug_details,
@@ -32,6 +33,7 @@ from livestorm_app.services import (
     build_transcript_plain_text,
     fetch_chat_and_questions_bundle,
     fetch_event_past_sessions,
+    fetch_workspace_events_page,
     fetch_session_details,
     format_generic_http_error,
     format_livestorm_http_error,
@@ -207,6 +209,31 @@ def fetch_event_sessions(api_key: str, event_id: str) -> Dict[str, Any]:
         "eventId": event_id.strip(),
         "pagesFetched": payload.get("pages_fetched", 1),
         "options": build_event_session_options(payload),
+        "payload": payload,
+    }
+
+
+def fetch_available_events(
+    api_key: str,
+    page_number: int = 0,
+    page_size: int = 20,
+    title: str = "",
+    scheduling_status: str = "",
+) -> Dict[str, Any]:
+    payload = fetch_workspace_events_page(
+        api_key,
+        page_number=page_number,
+        page_size=page_size,
+        title=title,
+        scheduling_status=scheduling_status,
+    )
+    return {
+        "pagesFetched": payload.get("pages_fetched", 1),
+        "currentPage": payload.get("requested_page_number", page_number),
+        "nextPage": payload.get("next_page"),
+        "title": str(title or "").strip(),
+        "schedulingStatus": str(scheduling_status or "").strip(),
+        "options": build_workspace_event_options(payload),
         "payload": payload,
     }
 

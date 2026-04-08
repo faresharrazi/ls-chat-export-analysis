@@ -4,7 +4,7 @@ import RichMarkdownCard from "../components/RichMarkdownCard.vue";
 import { api } from "../api";
 import { useWorkspace } from "../store/workspace";
 
-const { state, runContentRepurposing, hasTranscriptData, isTranscriptLoading } = useWorkspace();
+const { state, runContentRepurposing, hasTranscriptData, isTranscriptLoading, isTranscriptUnavailable } = useWorkspace();
 
 const activeLanguage = ref("English");
 const activeContentType = ref("summary");
@@ -46,6 +46,7 @@ const uiText = computed(() =>
         empty: "Aucun contenu disponible pour cette section.",
         transcriptLoadingTitle: "Transcription en cours de chargement",
         transcriptLoadingBody: "La réutilisation de contenu sera disponible une fois la transcription prête.",
+        transcriptUnavailableTitle: "Réutilisation de contenu indisponible pour cette session",
       }
     : {
         title: "Content Repurposing",
@@ -62,6 +63,7 @@ const uiText = computed(() =>
         empty: "No content available yet for this section.",
         transcriptLoadingTitle: "Transcript still loading",
         transcriptLoadingBody: "Content Repurposing will become available once the transcript is ready.",
+        transcriptUnavailableTitle: "Content Repurposing unavailable for this session",
       }
 );
 
@@ -126,6 +128,10 @@ async function generateForLanguage(language) {
     <section v-else-if="isTranscriptLoading" class="panel loading-panel">
       <h3>{{ uiText.transcriptLoadingTitle }}</h3>
       <p>{{ uiText.transcriptLoadingBody }}</p>
+    </section>
+    <section v-else-if="isTranscriptUnavailable" class="panel helper-panel">
+      <h3>{{ uiText.transcriptUnavailableTitle || "Content Repurposing unavailable for this session" }}</h3>
+      <p>{{ state.transcriptUnavailableReason }}</p>
     </section>
   </section>
 </template>

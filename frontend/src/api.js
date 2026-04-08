@@ -52,6 +52,12 @@ export const api = {
   bootstrap() {
     return request("/api/bootstrap");
   },
+  fetchWorkspaceEvents(payload) {
+    return request("/api/workspace-events", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
   fetchEventSessions(payload) {
     return request("/api/event-sessions", {
       method: "POST",
