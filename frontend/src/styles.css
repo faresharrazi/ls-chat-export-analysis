@@ -1189,15 +1189,11 @@ textarea {
   background: transparent;
   min-width: 0;
   box-shadow: none;
-  text-decoration: underline;
-  text-decoration-color: rgba(240, 169, 169, 0.38);
-  text-underline-offset: 0.16rem;
 }
 
 .oauth-disconnect-button:hover {
   color: #ffd1d1;
   background: transparent;
-  text-decoration-color: rgba(255, 209, 209, 0.62);
   box-shadow: none;
   transform: none;
 }
