@@ -1,6 +1,6 @@
 <script setup>
 import { computed, ref } from "vue";
-import ContentPaceAudienceActivityChartCard from "../components/ContentPaceAudienceActivityChartCard.vue";
+import ContentPaceAudienceActivityChartCard from "../components/charts/analysis/ContentPaceAudienceActivityChartCard.vue";
 import DataTable from "../components/DataTable.vue";
 import RichMarkdownCard from "../components/RichMarkdownCard.vue";
 import { api } from "../api";
@@ -58,6 +58,7 @@ const uiText = computed(() =>
         contentPaceTitle: "Rythme du contenu et activité de l’audience",
         reactionMomentsTitle: "Segments avec le plus de réactions",
         reactionColumns: {
+          speaker: "Intervenant",
           session_stage: "Phase de session",
           start_label: "Début",
           excerpt: "Extrait",
@@ -81,6 +82,7 @@ const uiText = computed(() =>
         contentPaceTitle: "Content Pace And Audience Activity",
         reactionMomentsTitle: "Segments With The Most Reactions",
         reactionColumns: {
+          speaker: "Speaker",
           session_stage: "Session Stage",
           start_label: "Start",
           excerpt: "Excerpt",
@@ -228,19 +230,39 @@ const parsedDeepSections = computed(() => {
 
 const activeDeepSectionBody = computed(() => parsedDeepSections.value?.[activeDeepSection.value] || "");
 const deepTimelineRows = computed(() => state.workspace?.tables?.chatQuestionsTimeline || []);
-const deepReactionRows = computed(() =>
-  (state.workspace?.tables?.chatQuestionReactionMoments || []).map((row) => ({
-    session_stage: row.session_stage,
-    start_label: row.start_label,
-    excerpt: row.excerpt,
-    chat_messages: row.chat_messages,
-    question_count: row.question_count,
-  }))
-);
+const transcriptSegmentRows = computed(() => state.workspace?.tables?.transcriptSegments || []);
+const deepReactionRows = computed(() => {
+  const speakerNames = state.workspace?.speakerNames || {};
+  const speakerByStartLabel = new Map(
+    transcriptSegmentRows.value
+      .map((row) => {
+        const startLabel = String(row?.start_label || "").trim();
+        const rawSpeaker = String(row?.speaker || "").trim();
+        return [startLabel, speakerNames[rawSpeaker] || rawSpeaker || ""];
+      })
+      .filter(([startLabel, speaker]) => startLabel && speaker),
+  );
+  return (state.workspace?.tables?.chatQuestionReactionMoments || []).map((row) => {
+    const rawSpeaker = String(row.speaker || "").trim();
+    return {
+      session_stage: row.session_stage,
+      start_label: row.start_label,
+      speaker:
+        speakerNames[rawSpeaker] ||
+        rawSpeaker ||
+        speakerByStartLabel.get(String(row.start_label || "").trim()) ||
+        "",
+      excerpt: row.excerpt,
+      chat_messages: row.chat_messages,
+      question_count: row.question_count,
+    };
+  });
+});
 
 const reactionColumnLabels = computed(() => uiText.value.reactionColumns);
 
 const reactionColumnWidths = {
+  speaker: "12rem",
   session_stage: "12rem",
   start_label: "8rem",
   excerpt: "34rem",

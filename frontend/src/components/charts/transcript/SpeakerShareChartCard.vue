@@ -1,5 +1,6 @@
 <script setup>
 import { computed } from "vue";
+import { buildSpeakerColorMap } from "./speakerColors";
 
 const props = defineProps({
   title: {
@@ -12,20 +13,21 @@ const props = defineProps({
   },
 });
 
-const palette = ["#8eddf0", "#ffc247", "#f46a6f", "#63d084", "#8b9bff", "#d989ff", "#5fd5bb"];
+const speakerColorMap = computed(() => buildSpeakerColorMap(props.rows.map((row) => row?.speaker)));
 
 const normalizedRows = computed(() => {
   let cumulative = 0;
-  return props.rows.map((row, index) => {
+  return props.rows.map((row) => {
     const value = Number(row?.share_pct) || 0;
     const start = cumulative / 100;
     cumulative += value;
     const end = cumulative / 100;
+    const speaker = String(row?.speaker || "Unknown");
     const midAngle = ((start + end) / 2) * 360;
     return {
-      speaker: String(row?.speaker || "Unknown"),
+      speaker,
       value,
-      color: palette[index % palette.length],
+      color: speakerColorMap.value[speaker],
       path: describePieSlice(50, 50, 36, start * 360, end * 360),
       labelPosition: polarToCartesian(50, 50, 21, midAngle),
       midAngle,

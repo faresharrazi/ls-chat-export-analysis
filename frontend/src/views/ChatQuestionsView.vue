@@ -1,8 +1,8 @@
 <script setup>
 import { computed, ref } from "vue";
-import ActivityTimelineChartCard from "../components/ActivityTimelineChartCard.vue";
-import BarChartCard from "../components/BarChartCard.vue";
-import ContributorsComparisonChartCard from "../components/ContributorsComparisonChartCard.vue";
+import ActivityTimelineChartCard from "../components/charts/chat-questions/ActivityTimelineChartCard.vue";
+import BarChartCard from "../components/charts/shared/BarChartCard.vue";
+import ContributorsComparisonChartCard from "../components/charts/chat-questions/ContributorsComparisonChartCard.vue";
 import DataTable from "../components/DataTable.vue";
 import { useWorkspace } from "../store/workspace";
 
@@ -102,25 +102,25 @@ const topMetrics = computed(() => [
 
 const chatTableRows = computed(() =>
   chatRows.value.map((row) => ({
-    author_id: row.author_id,
+    text_content: row.text_content,
     created_at: row.created_at,
     updated_at: row.updated_at,
-    text_content: row.text_content,
+    author_id: row.author_id,
   }))
 );
 
 const chatColumnLabels = {
-  author_id: "Author ID",
+  text_content: "Message",
   created_at: "Created At",
   updated_at: "Updated At",
-  text_content: "Message",
+  author_id: "Author ID",
 };
 
 const chatColumnWidths = {
-  author_id: "16rem",
+  text_content: "24rem",
   created_at: "14rem",
   updated_at: "14rem",
-  text_content: "24rem",
+  author_id: "16rem",
 };
 
 const questionsTableRows = computed(() =>
@@ -367,20 +367,6 @@ const missingAudienceSignalMessage = computed(() => {
           title="Activity Over Time (UTC)"
           :rows="activityTimelineRows"
         />
-
-        <section class="panel" v-if="reactionMomentsRows.length">
-          <div class="panel-heading panel-heading-inline table-toolbar-panel">
-            <div class="panel-heading-inline-title">
-              <h3>Reaction Moments</h3>
-              <button class="inline-icon-button" type="button" title="Download reaction moments CSV" @click="downloadCsv('reaction-moments.csv', reactionMomentsRows)">
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M12 3v10.2l3.6-3.6 1.4 1.4-6 6-6-6 1.4-1.4 3.6 3.6V3H12zm-7 14h14v2H5v-2z" fill="currentColor" />
-                </svg>
-              </button>
-            </div>
-          </div>
-          <DataTable :rows="reactionMomentsRows" csv-filename="reaction-moments.csv" :show-toolbar="false" />
-        </section>
       </template>
 
       <template v-else>

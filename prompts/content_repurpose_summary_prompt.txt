@@ -20,7 +20,6 @@ Output:
 - Target roughly 500-700 words.
 
 Suggested structure:
-# Event Summary
 ## Introduction
 ## Key Points Discussed
 ## Notable Quotes

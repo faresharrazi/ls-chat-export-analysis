@@ -124,8 +124,12 @@ const yTicks = computed(() => {
           </text>
         </g>
 
-        <path v-if="messagePath" class="activity-chart-line activity-chart-line-messages" :d="messagePath" />
-        <path v-if="questionPath" class="activity-chart-line activity-chart-line-questions" :d="questionPath" />
+        <path v-if="messagePath" class="activity-chart-line activity-chart-line-messages" :d="messagePath">
+          <title>Messages over time. Hover points to see the exact count for each time slot.</title>
+        </path>
+        <path v-if="questionPath" class="activity-chart-line activity-chart-line-questions" :d="questionPath">
+          <title>Questions over time. Hover points to see the exact count for each time slot.</title>
+        </path>
 
         <circle
           v-for="(row, index) in normalizedRows"

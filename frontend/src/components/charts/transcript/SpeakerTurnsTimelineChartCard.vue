@@ -1,5 +1,6 @@
 <script setup>
 import { computed } from "vue";
+import { buildSpeakerColorMap } from "./speakerColors";
 
 const props = defineProps({
   title: {
@@ -15,22 +16,12 @@ const props = defineProps({
 const chartWidth = 600;
 const chartHeight = 240;
 const margin = { top: 18, right: 18, bottom: 38, left: 78 };
-const palette = ["#8eddf0", "#63d084", "#ffc247", "#f46a6f", "#8b9bff", "#d989ff", "#5fd5bb"];
 
 const speakerOrder = computed(() => {
-  const seen = new Set();
-  return props.rows
-    .map((row) => String(row?.speaker || "Unknown"))
-    .filter((speaker) => {
-      if (seen.has(speaker)) return false;
-      seen.add(speaker);
-      return true;
-    });
+  return Object.keys(buildSpeakerColorMap(props.rows.map((row) => row?.speaker)));
 });
 
-const speakerColorMap = computed(() =>
-  Object.fromEntries(speakerOrder.value.map((speaker, index) => [speaker, palette[index % palette.length]]))
-);
+const speakerColorMap = computed(() => buildSpeakerColorMap(props.rows.map((row) => row?.speaker)));
 
 const normalizedRows = computed(() => {
   const plotWidth = chartWidth - margin.left - margin.right;

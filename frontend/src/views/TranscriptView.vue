@@ -1,15 +1,15 @@
 <script setup>
 import { computed, reactive, ref, watch } from "vue";
-import BarChartCard from "../components/BarChartCard.vue";
+import BarChartCard from "../components/charts/shared/BarChartCard.vue";
 import DataTable from "../components/DataTable.vue";
-import HistogramChartCard from "../components/HistogramChartCard.vue";
-import PaceOverTimeChartCard from "../components/PaceOverTimeChartCard.vue";
-import SpeakerShareChartCard from "../components/SpeakerShareChartCard.vue";
-import SpeakerTimelineChartCard from "../components/SpeakerTimelineChartCard.vue";
-import SpeakerTurnsTimelineChartCard from "../components/SpeakerTurnsTimelineChartCard.vue";
-import SpeakingBurstChartCard from "../components/SpeakingBurstChartCard.vue";
-import TimelinePauseChartCard from "../components/TimelinePauseChartCard.vue";
-import WordsOverTimeChartCard from "../components/WordsOverTimeChartCard.vue";
+import HistogramChartCard from "../components/charts/transcript/HistogramChartCard.vue";
+import PaceOverTimeChartCard from "../components/charts/transcript/PaceOverTimeChartCard.vue";
+import SpeakerShareChartCard from "../components/charts/transcript/SpeakerShareChartCard.vue";
+import SpeakerTimelineChartCard from "../components/charts/transcript/SpeakerTimelineChartCard.vue";
+import SpeakerTurnsTimelineChartCard from "../components/charts/transcript/SpeakerTurnsTimelineChartCard.vue";
+import SpeakingBurstChartCard from "../components/charts/transcript/SpeakingBurstChartCard.vue";
+import TimelinePauseChartCard from "../components/charts/transcript/TimelinePauseChartCard.vue";
+import WordsOverTimeChartCard from "../components/charts/transcript/WordsOverTimeChartCard.vue";
 import { useWorkspace } from "../store/workspace";
 
 const { state, saveSpeakerLabels } = useWorkspace();
@@ -182,29 +182,58 @@ const numbersColumnWidths = {
 };
 
 const paceChartRows = computed(() =>
-  transcriptPace.value
+  transcriptTimeline.value
     .map((row) => ({
-      time_seconds: Number(row.time_seconds) || 0,
-      time_label: row.time_label || row.start_label || "Unknown",
-      segment_wpm: Number(row.segment_wpm) || 0,
+      time_seconds: Number(row.minute_bucket || 0) * 60,
+      time_label: row.minute_label || "Unknown",
+      duration_seconds: 60,
+      segment_wpm: Number(row.words_per_minute) || 0,
     }))
     .filter((row) => row.segment_wpm > 0)
 );
 
-const paceSummaryCards = computed(() => [
-  {
-    label: "Average WPM",
-    value: Number(transcriptSummary.value?.global_wpm || transcriptSummary.value?.avg_words_per_minute || 0).toFixed(1),
-  },
-  {
-    label: "Min WPM",
-    value: Number(transcriptSummary.value?.min_wpm || 0).toFixed(1),
-  },
-  {
-    label: "Max WPM",
-    value: Number(transcriptSummary.value?.max_wpm || 0).toFixed(1),
-  },
-]);
+const paceSummaryCards = computed(() => {
+  const rows = paceChartRows.value;
+  const totalDuration = rows.reduce((sum, row) => sum + Math.max(Number(row.duration_seconds) || 0, 0), 0);
+  const weightedAverage =
+    totalDuration > 0
+      ? rows.reduce((sum, row) => sum + row.segment_wpm * Math.max(Number(row.duration_seconds) || 0, 0), 0) / totalDuration
+      : Number(transcriptSummary.value?.global_wpm || transcriptSummary.value?.avg_words_per_minute || 0);
+
+  const inHealthyZone = rows.reduce((sum, row) => {
+    const duration = Math.max(Number(row.duration_seconds) || 0, 0);
+    return row.segment_wpm >= 130 && row.segment_wpm <= 160 ? sum + duration : sum;
+  }, 0);
+  const tooFast = rows.reduce((sum, row) => {
+    const duration = Math.max(Number(row.duration_seconds) || 0, 0);
+    return row.segment_wpm > 180 ? sum + duration : sum;
+  }, 0);
+  const tooSlow = rows.reduce((sum, row) => {
+    const duration = Math.max(Number(row.duration_seconds) || 0, 0);
+    return row.segment_wpm < 120 ? sum + duration : sum;
+  }, 0);
+
+  const percent = (value) => (totalDuration > 0 ? `${((value / totalDuration) * 100).toFixed(0)}%` : "0%");
+
+  return [
+    {
+      label: "Average WPM",
+      value: Number(weightedAverage || 0).toFixed(1),
+    },
+    {
+      label: "% Healthy Zone",
+      value: percent(inHealthyZone),
+    },
+    {
+      label: "% Too Fast",
+      value: percent(tooFast),
+    },
+    {
+      label: "% Too Slow",
+      value: percent(tooSlow),
+    },
+  ];
+});
 
 const speakerAirtimeRows = computed(() =>
   transcriptSpeakers.value
@@ -502,14 +531,14 @@ const silenceDistributionRows = computed(() =>
 
 const tabs = [
   { id: "transcript", label: "Transcript" },
-  { id: "silence", label: "Silence / Pause Metrics" },
   { id: "pace", label: "Speaking Pace" },
   { id: "airtime", label: "Speaker Airtime" },
   { id: "turns", label: "Speaker Turns" },
+  { id: "highlights", label: "NER" },
   { id: "words", label: "Words Count" },
   { id: "segments", label: "Speaking Segments" },
+  { id: "silence", label: "Silence / Pause Metrics" },
   { id: "utterance", label: "Utterance Duration" },
-  { id: "highlights", label: "NER" },
 ];
 
 const hasTranscriptData = computed(

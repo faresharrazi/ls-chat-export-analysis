@@ -27,7 +27,6 @@ const activeSessionId = computed(() =>
   state.inputMode === "session" ? state.sessionId.trim() : state.selectedEventSessionId.trim()
 );
 
-const currentWorkspaceSessionId = computed(() => String(state.workspace?.sessionId || "").trim());
 const hasTranscriptData = computed(() => {
   const payload = state.workspace?.payloads?.transcript;
   const segments = state.workspace?.tables?.transcriptSegments || [];
@@ -127,9 +126,6 @@ watch(
       state.selectedEventSessionId = "";
     }
 
-    if (currentWorkspaceSessionId.value && currentWorkspaceSessionId.value !== activeSessionId.value) {
-      state.workspace = null;
-    }
   }
 );
 

@@ -191,8 +191,24 @@ const chartText = computed(() =>
           </rect>
         </g>
 
-        <path v-if="transcriptPath" class="content-pace-line content-pace-line-wpm" :d="transcriptPath" />
-        <path v-if="questionPath" class="content-pace-line content-pace-line-questions" :d="questionPath" />
+        <path v-if="transcriptPath" class="content-pace-line content-pace-line-wpm" :d="transcriptPath">
+          <title>
+            {{
+              isFrench
+                ? "Rythme de transcription au fil de la session. Survolez les points pour voir la valeur exacte par segment."
+                : "Transcript pace over the session. Hover the points to see the exact value for each segment."
+            }}
+          </title>
+        </path>
+        <path v-if="questionPath" class="content-pace-line content-pace-line-questions" :d="questionPath">
+          <title>
+            {{
+              isFrench
+                ? "Questions au fil de la session. Survolez les points pour voir le volume exact par segment."
+                : "Questions over the session. Hover the points to see the exact volume for each segment."
+            }}
+          </title>
+        </path>
 
         <circle
           v-for="(row, index) in normalizedRows"

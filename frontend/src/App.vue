@@ -1,11 +1,13 @@
 <script setup>
 import { computed, onMounted } from "vue";
-import { RouterLink, RouterView, useRoute } from "vue-router";
+import { RouterLink, RouterView, useRoute, useRouter } from "vue-router";
 import { api } from "./api";
+import FetchSessionForm from "./components/FetchSessionForm.vue";
 import { useWorkspace } from "./store/workspace";
 
 const { state, fetchSessionData, hasTranscriptData, isTranscriptLoading } = useWorkspace();
 const route = useRoute();
+const router = useRouter();
 const logoUrl = "/brand-assets/icons/Icon-Livestorm-Tertiary-Light.png";
 
 const navItems = [
@@ -21,6 +23,23 @@ const navStateByKey = computed(() => {
   const hasWorkspace = Boolean(state.workspace);
   const transcriptReady = hasTranscriptData.value;
   const transcriptLoading = isTranscriptLoading.value;
+  const isFreshSessionFetch =
+    state.loading.sessionFetch &&
+    (
+      (state.inputMode === "session" && Boolean(state.sessionId.trim())) ||
+      (state.inputMode === "event" && Boolean(state.selectedEventSessionId.trim()))
+    );
+
+  if (isFreshSessionFetch) {
+    return {
+      session: { disabled: true, loading: true, ready: false },
+      chat: { disabled: true, loading: true, ready: false },
+      transcript: { disabled: true, loading: true, ready: false },
+      analysis: { disabled: true, loading: true, ready: false },
+      repurposing: { disabled: true, loading: true, ready: false },
+      recap: { disabled: true, loading: true, ready: false },
+    };
+  }
 
   return {
     session: { disabled: !hasWorkspace, loading: false, ready: hasWorkspace },
@@ -51,6 +70,12 @@ onMounted(async () => {
 
 async function handleFetchClick() {
   try {
+    if (
+      (state.inputMode === "session" && state.sessionId.trim()) ||
+      (state.inputMode === "event" && state.selectedEventSessionId.trim())
+    ) {
+      router.push("/session-overview");
+    }
     await fetchSessionData(false);
   } catch (_error) {
     // The workspace store already surfaces a friendly message in the sidebar.
@@ -68,41 +93,7 @@ async function handleFetchClick() {
         </div>
       </div>
 
-      <section class="control-card">
-        <div class="field-group">
-          <input v-model="state.apiKey" type="password" placeholder="Livestorm API Key" />
-        </div>
-
-        <div class="field-group">
-          <div class="toggle-row">
-            <button :class="{ active: state.inputMode === 'session' }" @click="state.inputMode = 'session'">Session ID</button>
-            <button :class="{ active: state.inputMode === 'event' }" @click="state.inputMode = 'event'">Event ID</button>
-          </div>
-        </div>
-
-        <div v-if="state.inputMode === 'session'" class="field-group">
-          <input v-model="state.sessionId" type="text" placeholder="Session ID" />
-        </div>
-
-        <div v-else class="field-group">
-          <input v-model="state.eventId" type="text" placeholder="Event ID" />
-          <select v-model="state.selectedEventSessionId" v-if="state.eventSessions.length">
-            <option value="">Select a past session</option>
-            <option v-for="session in state.eventSessions" :key="session.id" :value="session.id">
-              {{ session.label }}
-            </option>
-          </select>
-          <p v-if="state.selectedEventSessionId" class="field-hint">{{ state.selectedEventSessionId }}</p>
-        </div>
-
-        <button
-          class="primary fetch-button"
-          :disabled="state.loading.sessionFetch || state.loading.eventSessions || !state.apiKey || !(state.inputMode === 'session' ? state.sessionId.trim() : state.eventId.trim())"
-          @click="handleFetchClick"
-        >
-          {{ state.loading.sessionFetch || state.loading.eventSessions ? "Fetching..." : "Fetch Data" }}
-        </button>
-      </section>
+      <FetchSessionForm :state="state" @fetch="handleFetchClick" />
 
       <p v-if="state.error" class="error-text">{{ state.error }}</p>
     </aside>

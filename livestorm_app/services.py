@@ -1156,7 +1156,8 @@ def analysis_markdown_to_pdf_bytes(markdown_text: str, title: str) -> bytes:
         from reportlab.lib.pagesizes import A4
         from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
         from reportlab.lib.units import mm
-        from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
+        from reportlab.lib.utils import ImageReader
+        from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer
     except ImportError as exc:
         raise RuntimeError(
             f"PDF export unavailable. Install with: `{sys.executable} -m pip install reportlab`"
@@ -1188,13 +1189,56 @@ def analysis_markdown_to_pdf_bytes(markdown_text: str, title: str) -> bytes:
         pagesize=A4,
         leftMargin=18 * mm,
         rightMargin=18 * mm,
-        topMargin=16 * mm,
+        topMargin=20 * mm,
         bottomMargin=16 * mm,
         title=title,
     )
 
-    story = [Paragraph(title, title_style), Spacer(1, 8)]
-    for line in [line.strip() for line in markdown_text.splitlines()]:
+    story = []
+    logo_path = Path(__file__).resolve().parent.parent / "assets" / "icons" / "Logo-Livestorm-Primary.png"
+    if logo_path.exists():
+        image_reader = ImageReader(str(logo_path))
+        original_width, original_height = image_reader.getSize()
+        target_width = 40 * mm
+        target_height = target_width * (float(original_height) / float(original_width)) if original_width else 10 * mm
+        logo = Image(str(logo_path), width=target_width, height=target_height)
+        logo.hAlign = "LEFT"
+        story.extend([logo, Spacer(1, 14)])
+
+    story.extend([Paragraph(title, title_style), Spacer(1, 8)])
+
+    cleaned_lines: List[str] = []
+    skipped_summary_heading = False
+    summary_heading_tokens = {
+        "event summary",
+        "# event summary",
+        "resume de l evenement",
+        "# resume de l evenement",
+        "resume evenement",
+        "# resume evenement",
+        "résumé de l'événement",
+        "# résumé de l'événement",
+        "resume de l'evenement",
+        "# resume de l'evenement",
+    }
+
+    for raw_line in markdown_text.splitlines():
+        stripped = raw_line.strip()
+        normalized = (
+            stripped.lower()
+            .replace("’", "'")
+            .replace("é", "e")
+            .replace("è", "e")
+            .replace("ê", "e")
+            .replace("à", "a")
+            .replace("ù", "u")
+        )
+        if not skipped_summary_heading and normalized in summary_heading_tokens:
+            skipped_summary_heading = True
+            continue
+        cleaned_lines.append(raw_line)
+
+    for line in [line.strip() for line in cleaned_lines]:
         if not line:
             story.append(Spacer(1, 5))
             continue
@@ -2768,6 +2812,7 @@ def build_cross_source_insights(
             .agg(
                 start_seconds=("start_seconds", "min"),
                 start_label=("start_label", "first"),
+                speaker=("speaker", lambda values: next((str(v).strip() for v in values if str(v).strip()), "")),
                 transcript_excerpt=("text", lambda values: " ".join([str(v).strip() for v in values if str(v).strip()])),
                 transcript_segments=("text", "size"),
                 transcript_words=("word_count", "sum"),

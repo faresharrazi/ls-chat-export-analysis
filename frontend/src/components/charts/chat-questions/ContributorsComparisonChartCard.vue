@@ -14,7 +14,7 @@ const props = defineProps({
 
 const chartWidth = 980;
 const chartHeight = 340;
-const margin = { top: 18, right: 22, bottom: 112, left: 52 };
+const margin = { top: 18, right: 22, bottom: 92, left: 52 };
 const seriesColors = {
   Messages: "#8eddf0",
   Questions: "#ffc247",
@@ -101,7 +101,7 @@ const yTicks = computed(() => {
           <text class="svg-axis-title" :x="20" :y="chartHeight / 2" text-anchor="middle" transform="rotate(-90, 20, 160)">
             Count
           </text>
-          <text class="svg-axis-title" :x="chartWidth / 2" :y="chartHeight - 2" text-anchor="middle">
+          <text class="svg-axis-title" :x="chartWidth / 2" :y="chartHeight - 10" text-anchor="middle">
             Author / Asker ID
           </text>
         </g>
@@ -121,9 +121,9 @@ const yTicks = computed(() => {
             <text
               class="contributors-x-label"
               :x="row.labelX"
-              :y="chartHeight - 34"
+              :y="chartHeight - 48"
               text-anchor="middle"
-              :transform="`rotate(20 ${row.labelX} ${chartHeight - 34})`"
+              :transform="`rotate(20 ${row.labelX} ${chartHeight - 48})`"
             >
               {{ row.displayLabel }}
             </text>

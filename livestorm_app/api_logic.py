@@ -408,14 +408,15 @@ def build_analysis_pdf(session_id: str, analysis_kind: str, language: str) -> Di
     cached = _require_cached_payloads(session_id)
     language = str(language or "English").strip() or "English"
     kind = str(analysis_kind or "").strip().lower()
+    is_french = language.lower() == "french"
 
     if kind == "overall":
         bundle = _normalize_text_bundle(cached.get("analysis_bundle"), str(cached.get("analysis_md") or ""))
-        title = f"Livestorm Overall Analysis - {language}"
+        title = "Analyse globale" if is_french else "Overall Analysis"
         filename = f"livestorm-overall-analysis-{language.lower()}-{session_id}.pdf"
     elif kind == "deep":
         bundle = _normalize_text_bundle(cached.get("deep_analysis_bundle"), str(cached.get("deep_analysis_md") or ""))
-        title = f"Livestorm Deep Analysis - {language}"
+        title = "Analyse approfondie" if is_french else "Deep Analysis"
         filename = f"livestorm-deep-analysis-{language.lower()}-{session_id}.pdf"
     else:
         raise RuntimeError("Unknown analysis kind. Expected `overall` or `deep`.")
@@ -472,6 +473,7 @@ def build_smart_recap_pdf(session_id: str, tone: str) -> Dict[str, Any]:
 def build_content_repurposing_pdf(session_id: str, language: str, item: str) -> Dict[str, Any]:
     cached = _require_cached_payloads(session_id)
     language_key = str(language or "English").strip() or "English"
+    is_french = language_key.lower() == "french"
     item_key = str(item or "").strip().lower()
     all_bundles = cached.get("content_repurpose_bundle") if isinstance(cached.get("content_repurpose_bundle"), dict) else {}
     language_bundle = all_bundles.get(language_key) if isinstance(all_bundles.get(language_key), dict) else {}
@@ -480,13 +482,13 @@ def build_content_repurposing_pdf(session_id: str, language: str, item: str) -> 
         raise RuntimeError(f"No content repurposing output is available yet for {language_key} / {item_key}.")
 
     label_map = {
-        "summary": "Summary",
-        "blog": "Blog",
-        "email": "Email",
-        "social_media": "Social Media",
+        "summary": "Résumé" if is_french else "Summary",
+        "blog": "Article de blog" if is_french else "Blog",
+        "email": "Email de suivi" if is_french else "Email",
+        "social_media": "Posts réseaux sociaux" if is_french else "Social Media",
     }
     item_label = label_map.get(item_key, item_key.title())
-    title = f"Livestorm Content Repurposing - {item_label} - {language_key}"
+    title = item_label
     filename = f"livestorm-content-{language_key.lower()}-{item_key}-{session_id}.pdf"
     pdf_bytes = analysis_markdown_to_pdf_bytes(markdown, title=title)
     return {"filename": filename, "content": pdf_bytes}
