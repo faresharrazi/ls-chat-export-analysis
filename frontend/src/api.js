@@ -52,6 +52,11 @@ export const api = {
   bootstrap() {
     return request("/api/bootstrap");
   },
+  logout() {
+    return request("/api/auth/logout", {
+      method: "POST",
+    });
+  },
   fetchEventSessions(payload) {
     return request("/api/event-sessions", {
       method: "POST",

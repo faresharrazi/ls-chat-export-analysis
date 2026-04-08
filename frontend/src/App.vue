@@ -5,7 +5,7 @@ import { api } from "./api";
 import FetchSessionForm from "./components/FetchSessionForm.vue";
 import { useWorkspace } from "./store/workspace";
 
-const { state, fetchSessionData, hasTranscriptData, isTranscriptLoading } = useWorkspace();
+const { state, applyBootstrap, fetchSessionData, hasTranscriptData, isTranscriptLoading, resetWorkspace } = useWorkspace();
 const route = useRoute();
 const router = useRouter();
 const logoUrl = "/brand-assets/icons/Icon-Livestorm-Tertiary-Light.png";
@@ -56,17 +56,33 @@ function getNavMeta(item) {
 }
 
 onMounted(async () => {
-  if (state.apiKey) return;
   try {
     const bootstrap = await api.bootstrap();
-    const defaultApiKey = String(bootstrap?.defaults?.apiKey || "").trim();
-    if (defaultApiKey && !state.apiKey) {
-      state.apiKey = defaultApiKey;
+    applyBootstrap(bootstrap);
+    if (route.path === "/auth/callback") {
+      await router.replace("/");
     }
   } catch (_error) {
     // Ignore bootstrap failures so manual entry still works without friction.
   }
 });
+
+function handleConnectClick() {
+  const returnTo = route.path || "/";
+  window.location.href = `/api/auth/livestorm/start?returnTo=${encodeURIComponent(returnTo)}`;
+}
+
+async function handleLogoutClick() {
+  try {
+    await api.logout();
+  } catch (_error) {
+    // Ignore logout failures and clear the local state anyway.
+  }
+  state.auth.connectedUser = null;
+  state.apiKey = "";
+  resetWorkspace();
+  router.push("/");
+}
 
 async function handleFetchClick() {
   try {
@@ -93,7 +109,7 @@ async function handleFetchClick() {
         </div>
       </div>
 
-      <FetchSessionForm :state="state" @fetch="handleFetchClick" />
+      <FetchSessionForm :state="state" @fetch="handleFetchClick" @connect="handleConnectClick" @logout="handleLogoutClick" />
 
       <p v-if="state.error" class="error-text">{{ state.error }}</p>
     </aside>

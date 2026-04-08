@@ -98,6 +98,31 @@ def ensure_database_schema() -> None:
             )
             cursor.execute(
                 """
+                CREATE TABLE IF NOT EXISTS oauth_connections (
+                    connection_id TEXT PRIMARY KEY,
+                    provider TEXT NOT NULL,
+                    user_id TEXT,
+                    email TEXT,
+                    organization_id TEXT,
+                    access_token TEXT NOT NULL,
+                    refresh_token TEXT,
+                    token_type TEXT NOT NULL DEFAULT 'Bearer',
+                    scope TEXT,
+                    expires_at TIMESTAMPTZ,
+                    profile JSONB,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_oauth_connections_user_id
+                ON oauth_connections (provider, user_id)
+                """
+            )
+            cursor.execute(
+                """
                 DELETE FROM session_cache
                 WHERE ctid IN (
                     SELECT ctid
@@ -221,3 +246,164 @@ def upsert_cached_session(api_key: str, session_id: str, **fields: Any) -> None:
             connection.commit()
     except Exception:
         logger.exception("Failed to upsert cached session for session_id=%s", session_id_value)
+
+
+def fetch_oauth_connection(connection_id: str) -> Optional[Dict[str, Any]]:
+    if not database_enabled() or not str(connection_id or "").strip():
+        return None
+    try:
+        with get_db_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        connection_id,
+                        provider,
+                        user_id,
+                        email,
+                        organization_id,
+                        access_token,
+                        refresh_token,
+                        token_type,
+                        scope,
+                        expires_at,
+                        profile,
+                        created_at,
+                        updated_at
+                    FROM oauth_connections
+                    WHERE connection_id = %s
+                    LIMIT 1
+                    """,
+                    (str(connection_id).strip(),),
+                )
+                row = cursor.fetchone()
+        return dict(row) if isinstance(row, dict) else None
+    except Exception:
+        logger.exception("Failed to read oauth connection for connection_id=%s", str(connection_id).strip())
+        return None
+
+
+def upsert_oauth_connection(
+    *,
+    connection_id: str,
+    provider: str,
+    user_id: str,
+    email: str,
+    organization_id: str,
+    access_token: str,
+    refresh_token: str,
+    token_type: str,
+    scope: str,
+    expires_at: Optional[str],
+    profile: Dict[str, Any],
+) -> None:
+    if not database_enabled() or not str(connection_id or "").strip():
+        return
+    try:
+        with get_db_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO oauth_connections (
+                        connection_id,
+                        provider,
+                        user_id,
+                        email,
+                        organization_id,
+                        access_token,
+                        refresh_token,
+                        token_type,
+                        scope,
+                        expires_at,
+                        profile
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+                    ON CONFLICT (connection_id)
+                    DO UPDATE SET
+                        provider = EXCLUDED.provider,
+                        user_id = EXCLUDED.user_id,
+                        email = EXCLUDED.email,
+                        organization_id = EXCLUDED.organization_id,
+                        access_token = EXCLUDED.access_token,
+                        refresh_token = EXCLUDED.refresh_token,
+                        token_type = EXCLUDED.token_type,
+                        scope = EXCLUDED.scope,
+                        expires_at = EXCLUDED.expires_at,
+                        profile = EXCLUDED.profile,
+                        updated_at = NOW()
+                    """,
+                    (
+                        str(connection_id).strip(),
+                        str(provider).strip(),
+                        str(user_id).strip(),
+                        str(email).strip(),
+                        str(organization_id).strip(),
+                        str(access_token).strip(),
+                        str(refresh_token).strip(),
+                        str(token_type).strip() or "Bearer",
+                        str(scope).strip(),
+                        expires_at,
+                        json.dumps(profile, ensure_ascii=False),
+                    ),
+                )
+            connection.commit()
+    except Exception:
+        logger.exception("Failed to upsert oauth connection for connection_id=%s", str(connection_id).strip())
+
+
+def update_oauth_connection_tokens(
+    *,
+    connection_id: str,
+    access_token: str,
+    refresh_token: str,
+    token_type: str,
+    scope: str,
+    expires_at: Optional[str],
+) -> None:
+    if not database_enabled() or not str(connection_id or "").strip():
+        return
+    try:
+        with get_db_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE oauth_connections
+                    SET
+                        access_token = %s,
+                        refresh_token = %s,
+                        token_type = %s,
+                        scope = %s,
+                        expires_at = %s,
+                        updated_at = NOW()
+                    WHERE connection_id = %s
+                    """,
+                    (
+                        str(access_token).strip(),
+                        str(refresh_token).strip(),
+                        str(token_type).strip() or "Bearer",
+                        str(scope).strip(),
+                        expires_at,
+                        str(connection_id).strip(),
+                    ),
+                )
+            connection.commit()
+    except Exception:
+        logger.exception("Failed to update oauth tokens for connection_id=%s", str(connection_id).strip())
+
+
+def delete_oauth_connection(connection_id: str) -> None:
+    if not database_enabled() or not str(connection_id or "").strip():
+        return
+    try:
+        with get_db_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    DELETE FROM oauth_connections
+                    WHERE connection_id = %s
+                    """,
+                    (str(connection_id).strip(),),
+                )
+            connection.commit()
+    except Exception:
+        logger.exception("Failed to delete oauth connection for connection_id=%s", str(connection_id).strip())

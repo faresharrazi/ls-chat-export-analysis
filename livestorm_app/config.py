@@ -3,6 +3,10 @@ from pathlib import Path
 
 API_BASE = "https://api.livestorm.co/v1"
 OPENAI_CHAT_COMPLETIONS_URL = "https://api.openai.com/v1/chat/completions"
+LIVESTORM_OAUTH_AUTHORIZE_URL = "https://app.livestorm.co/oauth/authorize"
+LIVESTORM_OAUTH_TOKEN_URL = "https://app.livestorm.co/oauth/token"
+LIVESTORM_OAUTH_ME_URL = f"{API_BASE}/me"
+LIVESTORM_OAUTH_DEFAULT_SCOPES = "identity:read events:read"
 DEFAULT_PAGE_SIZE = 100
 MAX_PAGES = 1000
 START_PAGE_NUMBER = 0

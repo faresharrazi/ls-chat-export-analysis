@@ -1,4 +1,6 @@
 <script setup>
+import { computed } from "vue";
+
 const props = defineProps({
   state: {
     type: Object,
@@ -6,13 +8,31 @@ const props = defineProps({
   },
 });
 
-const emit = defineEmits(["fetch"]);
+const emit = defineEmits(["fetch", "connect", "logout"]);
+const isOAuthMode = computed(() => props.state.auth?.oauthEnabled);
+const isConnected = computed(() => Boolean(props.state.auth?.connectedUser));
 </script>
 
 <template>
   <section class="control-card">
-    <div class="field-group">
+    <div v-if="!isOAuthMode" class="field-group">
       <input v-model="props.state.apiKey" type="password" placeholder="Livestorm API Key" />
+    </div>
+
+    <div v-else class="field-group oauth-panel">
+      <button v-if="!isConnected" class="primary fetch-button oauth-connect-button" @click="emit('connect')">
+        Connect with Livestorm
+      </button>
+      <div v-else class="oauth-connected-card">
+        <div class="oauth-connected-title">Connected with Livestorm</div>
+        <div class="oauth-connected-meta">
+          <strong>{{ props.state.auth.connectedUser.fullName || props.state.auth.connectedUser.email }}</strong>
+        </div>
+        <div v-if="props.state.auth.connectedUser.organizationName" class="oauth-connected-meta">
+          {{ props.state.auth.connectedUser.organizationName }}
+        </div>
+        <button class="secondary oauth-disconnect-button" @click="emit('logout')">Disconnect</button>
+      </div>
     </div>
 
     <div class="field-group">
@@ -42,7 +62,8 @@ const emit = defineEmits(["fetch"]);
       :disabled="
         props.state.loading.sessionFetch ||
         props.state.loading.eventSessions ||
-        !props.state.apiKey ||
+        (!isOAuthMode && !props.state.apiKey) ||
+        (isOAuthMode && !isConnected) ||
         !(props.state.inputMode === 'session' ? props.state.sessionId.trim() : props.state.eventId.trim())
       "
       @click="emit('fetch')"

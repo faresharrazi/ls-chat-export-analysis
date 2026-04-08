@@ -3,6 +3,10 @@ import { api } from "../api";
 
 const state = reactive({
   apiKey: "",
+  auth: {
+    oauthEnabled: false,
+    connectedUser: null,
+  },
   inputMode: "session",
   sessionId: "",
   eventId: "",
@@ -50,8 +54,22 @@ async function wrapCall(flag, fn) {
   }
 }
 
+function applyBootstrap(payload) {
+  const defaultApiKey = String(payload?.defaults?.apiKey || "").trim();
+  if (defaultApiKey && !state.apiKey) {
+    state.apiKey = defaultApiKey;
+  }
+  state.auth.oauthEnabled = Boolean(payload?.auth?.oauthEnabled);
+  state.auth.connectedUser = payload?.auth?.connectedUser || null;
+}
+
+function resetWorkspace() {
+  state.workspace = null;
+  state.error = "";
+}
+
 async function loadEventSessions() {
-  if (!state.apiKey || !state.eventId) return;
+  if ((!state.apiKey && !state.auth.connectedUser) || !state.eventId) return;
   const normalizedEventId = state.eventId.trim();
   const currentSelection = state.selectedEventSessionId;
   const data = await wrapCall("eventSessions", () =>
@@ -190,8 +208,10 @@ export function useWorkspace() {
     activeSessionId,
     hasTranscriptData,
     isTranscriptLoading,
+    applyBootstrap,
     loadEventSessions,
     fetchSessionData,
+    resetWorkspace,
     saveSpeakerLabels,
     runAnalysis,
     runDeepAnalysis,

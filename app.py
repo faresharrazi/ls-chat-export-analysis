@@ -4,10 +4,10 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from fastapi import FastAPI, HTTPException, Query, Response
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -29,6 +29,20 @@ from livestorm_app.api_logic import (
 )
 from livestorm_app.config import ENV_PATH, get_runtime_secret, load_env_file
 from livestorm_app.db import ensure_database_schema
+from livestorm_app.oauth_client import (
+    LIVESTORM_OAUTH_COOKIE,
+    LIVESTORM_OAUTH_HANDSHAKE_COOKIE,
+    build_authorization_url,
+    delete_connection,
+    exchange_authorization_code,
+    fetch_me,
+    get_connection_identity,
+    get_frontend_app_url,
+    oauth_enabled,
+    persist_oauth_connection,
+    refresh_connection_if_needed,
+    validate_handshake,
+)
 
 
 logging.basicConfig(level=logging.INFO)
@@ -40,28 +54,28 @@ BRAND_ASSETS_DIR = BASE_DIR / "assets"
 
 
 class EventSessionsRequest(BaseModel):
-    api_key: str = Field(..., alias="apiKey")
+    api_key: str = Field("", alias="apiKey")
     event_id: str = Field(..., alias="eventId")
 
 
 class FetchSessionRequest(BaseModel):
-    api_key: str = Field(..., alias="apiKey")
+    api_key: str = Field("", alias="apiKey")
     transcript_api_key: Optional[str] = Field("", alias="transcriptApiKey")
     force_refresh: bool = Field(False, alias="forceRefresh")
 
 
 class SpeakerLabelsRequest(BaseModel):
-    api_key: str = Field(..., alias="apiKey")
+    api_key: str = Field("", alias="apiKey")
     speaker_names: Dict[str, str] = Field(default_factory=dict, alias="speakerNames")
 
 
 class AnalysisRequest(BaseModel):
-    api_key: str = Field(..., alias="apiKey")
+    api_key: str = Field("", alias="apiKey")
     output_language: str = Field("English", alias="outputLanguage")
 
 
 class SmartRecapRequest(BaseModel):
-    api_key: str = Field(..., alias="apiKey")
+    api_key: str = Field("", alias="apiKey")
     tone: str
 
 
@@ -75,6 +89,41 @@ def _raise_http_error(resource_label: str, exc: Exception, status_code: int = 40
             "details": error_payload["details"],
         },
     )
+
+
+def _resolve_livestorm_auth(raw_api_key: str, request: Request) -> str:
+    direct_api_key = str(raw_api_key or "").strip()
+    if direct_api_key:
+        return direct_api_key
+    connection_id = str(request.cookies.get(LIVESTORM_OAUTH_COOKIE) or "").strip()
+    if not connection_id:
+        raise HTTPException(
+            status_code=401,
+            detail={"resource": "Livestorm authentication", "message": "Please connect with Livestorm first."},
+        )
+    connection = refresh_connection_if_needed(connection_id)
+    if not isinstance(connection, dict):
+        raise HTTPException(
+            status_code=401,
+            detail={"resource": "Livestorm authentication", "message": "Your Livestorm connection has expired. Please reconnect."},
+        )
+    access_token = str(connection.get("access_token") or "").strip()
+    token_type = str(connection.get("token_type") or "Bearer").strip() or "Bearer"
+    if not access_token:
+        raise HTTPException(
+            status_code=401,
+            detail={"resource": "Livestorm authentication", "message": "Your Livestorm connection is missing an access token. Please reconnect."},
+        )
+    return f"{token_type} {access_token}"
+
+
+def _get_bootstrap_auth(request: Request) -> Dict[str, Any]:
+    connection_id = str(request.cookies.get(LIVESTORM_OAUTH_COOKIE) or "").strip()
+    connection = refresh_connection_if_needed(connection_id) if connection_id else None
+    return {
+        "oauthEnabled": oauth_enabled(),
+        "connectedUser": get_connection_identity(connection),
+    }
 
 
 load_env_file()
@@ -102,21 +151,85 @@ def healthcheck() -> Dict[str, str]:
 
 
 @app.get("/api/bootstrap")
-def bootstrap_defaults() -> Dict[str, Any]:
+def bootstrap_defaults(request: Request) -> Dict[str, Any]:
     default_api_key = ""
-    if ENV_PATH.exists():
+    if ENV_PATH.exists() and not oauth_enabled():
         default_api_key = get_runtime_secret("LS_API_KEY", "")
     return {
         "defaults": {
             "apiKey": default_api_key,
-        }
+        },
+        "auth": _get_bootstrap_auth(request),
     }
 
 
-@app.post("/api/event-sessions")
-def event_sessions(request: EventSessionsRequest) -> Dict[str, Any]:
+@app.get("/api/auth/livestorm/start")
+def start_livestorm_oauth(returnTo: str = Query("/")) -> Response:
+    if not oauth_enabled():
+        raise HTTPException(status_code=400, detail={"resource": "OAuth", "message": "Livestorm OAuth is not configured on the server yet."})
+    auth_request = build_authorization_url(return_to=returnTo)
+    response = RedirectResponse(auth_request["url"], status_code=302)
+    response.set_cookie(
+        LIVESTORM_OAUTH_HANDSHAKE_COOKIE,
+        auth_request["handshake_token"],
+        httponly=True,
+        samesite="lax",
+        secure=False,
+        max_age=600,
+        path="/",
+    )
+    return response
+
+
+@app.get("/api/auth/livestorm/callback")
+def complete_livestorm_oauth(code: str = Query(""), state: str = Query(""), request: Request = None) -> Response:
+    handshake_cookie = str((request.cookies.get(LIVESTORM_OAUTH_HANDSHAKE_COOKIE) if request else "") or "").strip()
+    frontend_base = get_frontend_app_url()
+    success_redirect = f"{frontend_base}/auth/callback?auth=success" if frontend_base else "/auth/callback?auth=success"
+    failure_redirect = f"{frontend_base}/auth/callback?auth=error" if frontend_base else "/auth/callback?auth=error"
+    if not handshake_cookie or not code.strip():
+        response = RedirectResponse(failure_redirect, status_code=302)
+        response.delete_cookie(LIVESTORM_OAUTH_HANDSHAKE_COOKIE, path="/")
+        return response
     try:
-        return fetch_event_sessions(request.api_key, request.event_id)
+        handshake = validate_handshake(handshake_cookie, state)
+        token_payload = exchange_authorization_code(code.strip(), str(handshake.get("verifier") or "").strip())
+        me_payload = fetch_me(str(token_payload.get("access_token") or "").strip())
+        connection = persist_oauth_connection(token_payload, me_payload)
+        response = RedirectResponse(success_redirect, status_code=302)
+        response.set_cookie(
+            LIVESTORM_OAUTH_COOKIE,
+            str(connection.get("connection_id") or "").strip(),
+            httponly=True,
+            samesite="lax",
+            secure=False,
+            max_age=60 * 60 * 24 * 30,
+            path="/",
+        )
+        response.delete_cookie(LIVESTORM_OAUTH_HANDSHAKE_COOKIE, path="/")
+        return response
+    except Exception:
+        logger.exception("Livestorm OAuth callback failed")
+        response = RedirectResponse(failure_redirect, status_code=302)
+        response.delete_cookie(LIVESTORM_OAUTH_HANDSHAKE_COOKIE, path="/")
+        return response
+
+
+@app.post("/api/auth/logout")
+def logout_livestorm_oauth(request: Request) -> Response:
+    connection_id = str(request.cookies.get(LIVESTORM_OAUTH_COOKIE) or "").strip()
+    if connection_id:
+        delete_connection(connection_id)
+    response = JSONResponse({"ok": True})
+    response.delete_cookie(LIVESTORM_OAUTH_COOKIE, path="/")
+    return response
+
+
+@app.post("/api/event-sessions")
+def event_sessions(request: EventSessionsRequest, http_request: Request) -> Dict[str, Any]:
+    try:
+        api_key = _resolve_livestorm_auth(request.api_key, http_request)
+        return fetch_event_sessions(api_key, request.event_id)
     except Exception as exc:
         _raise_http_error("Event sessions", exc)
         raise
@@ -143,11 +256,12 @@ def get_cached_session_workspace(session_id: str) -> Response:
 
 
 @app.post("/api/sessions/{session_id}/fetch")
-def fetch_session_workspace(session_id: str, request: FetchSessionRequest) -> Dict[str, Any]:
+def fetch_session_workspace(session_id: str, request: FetchSessionRequest, http_request: Request) -> Dict[str, Any]:
     try:
+        api_key = _resolve_livestorm_auth(request.api_key, http_request)
         transcript_api_key = str(request.transcript_api_key or "").strip() or get_runtime_secret("GLADIA_KEY", "")
         return fetch_all_session_data(
-            api_key=request.api_key,
+            api_key=api_key,
             transcript_api_key=transcript_api_key,
             session_id=session_id,
             force_refresh=request.force_refresh,
@@ -158,10 +272,11 @@ def fetch_session_workspace(session_id: str, request: FetchSessionRequest) -> Di
 
 
 @app.post("/api/sessions/{session_id}/fetch-base")
-def fetch_session_base_workspace(session_id: str, request: FetchSessionRequest) -> Dict[str, Any]:
+def fetch_session_base_workspace(session_id: str, request: FetchSessionRequest, http_request: Request) -> Dict[str, Any]:
     try:
+        api_key = _resolve_livestorm_auth(request.api_key, http_request)
         return fetch_session_base_data(
-            api_key=request.api_key,
+            api_key=api_key,
             session_id=session_id,
             force_refresh=request.force_refresh,
         )
@@ -171,11 +286,12 @@ def fetch_session_base_workspace(session_id: str, request: FetchSessionRequest) 
 
 
 @app.post("/api/sessions/{session_id}/fetch-transcript")
-def fetch_session_transcript_workspace(session_id: str, request: FetchSessionRequest) -> Dict[str, Any]:
+def fetch_session_transcript_workspace(session_id: str, request: FetchSessionRequest, http_request: Request) -> Dict[str, Any]:
     try:
+        api_key = _resolve_livestorm_auth(request.api_key, http_request)
         transcript_api_key = str(request.transcript_api_key or "").strip() or get_runtime_secret("GLADIA_KEY", "")
         return fetch_session_transcript_data(
-            api_key=request.api_key,
+            api_key=api_key,
             transcript_api_key=transcript_api_key,
             session_id=session_id,
             force_refresh=request.force_refresh,
@@ -186,9 +302,10 @@ def fetch_session_transcript_workspace(session_id: str, request: FetchSessionReq
 
 
 @app.post("/api/sessions/{session_id}/speaker-labels")
-def update_speaker_labels(session_id: str, request: SpeakerLabelsRequest) -> Dict[str, Any]:
+def update_speaker_labels(session_id: str, request: SpeakerLabelsRequest, http_request: Request) -> Dict[str, Any]:
     try:
-        return save_speaker_labels(request.api_key, session_id, request.speaker_names)
+        api_key = _resolve_livestorm_auth(request.api_key, http_request)
+        return save_speaker_labels(api_key, session_id, request.speaker_names)
     except Exception as exc:
         _raise_http_error("Speaker labels", exc)
         raise
