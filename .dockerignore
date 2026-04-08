@@ -3,7 +3,12 @@
 .env
 .venv
 __pycache__
-*.pyc
+*.py[cod]
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+htmlcov
 output
 frontend/node_modules
 frontend/dist
@@ -13,3 +18,6 @@ package-lock.json
 frontend/.vite
 frontend/.DS_Store
 .DS_Store
+*.log
+.vscode
+.idea
