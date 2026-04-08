@@ -9,6 +9,7 @@ const hasEvents = computed(() => state.workspaceEvents.length > 0);
 const canLoadMore = computed(
   () => state.workspaceEventsNextPage !== null && state.workspaceEventsNextPage !== undefined
 );
+const canUseLivestormAuth = computed(() => Boolean(state.apiKey || state.auth?.connectedUser));
 const isInitialLoading = computed(() => state.loading.workspaceEvents && !state.workspaceEvents.length);
 const filteredEvents = computed(() => {
   const query = localSearch.value.trim().toLowerCase();
@@ -103,7 +104,7 @@ async function handleFetchSessions(eventId) {
           <button
             type="button"
             class="ghost-link-button"
-            :disabled="state.loading.eventSessions || !state.apiKey"
+            :disabled="state.loading.eventSessions || !canUseLivestormAuth"
             @click="handleFetchSessions(event.id)"
           >
             {{
