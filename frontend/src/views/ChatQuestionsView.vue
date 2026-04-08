@@ -284,7 +284,7 @@ const missingAudienceSignalMessage = computed(() => {
 
 const questionsHelperMessage = computed(() => {
   if (hasQuestionData.value) return "";
-  return "This session has no submitted questions. That is common for many events. Chat activity and the transcript can still provide useful analysis for the session.";
+  return "This session has no submitted questions.";
 });
 </script>
 
