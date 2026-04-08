@@ -55,23 +55,6 @@ function setSource(source) {
           <span>{{ connectedBadgeLabel }}</span>
         </div>
         <div class="oauth-connected-title">Connected with Livestorm</div>
-        <div class="oauth-connected-meta">
-          <strong>{{
-            props.state.auth.connectedUser.organizationName ||
-            props.state.auth.connectedUser.fullName ||
-            props.state.auth.connectedUser.email
-          }}</strong>
-        </div>
-        <div
-          v-if="
-            props.state.auth.connectedUser.organizationName &&
-            props.state.auth.connectedUser.organizationName !==
-              (props.state.auth.connectedUser.fullName || props.state.auth.connectedUser.email)
-          "
-          class="oauth-connected-meta"
-        >
-          {{ props.state.auth.connectedUser.organizationName }}
-        </div>
         <button class="secondary oauth-disconnect-button" @click="emit('logout')">Disconnect</button>
       </div>
     </div>
