@@ -57,6 +57,12 @@ export const api = {
       method: "POST",
     });
   },
+  fetchWorkspaceEvents(payload) {
+    return request("/api/workspace-events", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
   fetchEventSessions(payload) {
     return request("/api/event-sessions", {
       method: "POST",

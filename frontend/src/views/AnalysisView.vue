@@ -6,7 +6,7 @@ import RichMarkdownCard from "../components/RichMarkdownCard.vue";
 import { api } from "../api";
 import { useWorkspace } from "../store/workspace";
 
-const { state, runAnalysis, runDeepAnalysis, hasTranscriptData, isTranscriptLoading } = useWorkspace();
+const { state, runAnalysis, runDeepAnalysis, hasTranscriptData, isTranscriptLoading, isTranscriptUnavailable } = useWorkspace();
 
 const activeCategory = ref("overall");
 const activeOverallLanguage = ref("English");
@@ -414,6 +414,10 @@ async function runDeepFor(language) {
     <section v-else-if="isTranscriptLoading" class="panel loading-panel">
       <h3>Transcript still loading</h3>
       <p>Analysis will become available as soon as the transcript finishes processing.</p>
+    </section>
+    <section v-else-if="isTranscriptUnavailable" class="panel helper-panel">
+      <h3>Analysis unavailable for this session</h3>
+      <p>{{ state.transcriptUnavailableReason }}</p>
     </section>
   </section>
 </template>

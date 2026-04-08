@@ -191,9 +191,6 @@ const healthyBand = computed(() => {
           <text class="svg-axis-title" :x="chartWidth / 2" :y="chartHeight - 2" text-anchor="middle">
             Time (sec)
           </text>
-          <text class="pace-zone-label" :x="chartWidth - margin.right - 8" :y="healthyBand.y + 14" text-anchor="end">
-            Healthy zone 130-160 WPM
-          </text>
         </g>
 
         <line

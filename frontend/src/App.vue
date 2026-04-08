@@ -5,12 +5,23 @@ import { api } from "./api";
 import FetchSessionForm from "./components/FetchSessionForm.vue";
 import { useWorkspace } from "./store/workspace";
 
-const { state, applyBootstrap, fetchSessionData, hasTranscriptData, isTranscriptLoading, resetWorkspace } = useWorkspace();
+const {
+  state,
+  applyBootstrap,
+  fetchSessionData,
+  hasTranscriptData,
+  isTranscriptLoading,
+  isTranscriptUnavailable,
+  loadWorkspaceEvents,
+  resetWorkspace,
+} = useWorkspace();
 const route = useRoute();
 const router = useRouter();
 const logoUrl = "/brand-assets/icons/Icon-Livestorm-Tertiary-Light.png";
+const hasEvents = computed(() => state.workspaceEvents.length > 0);
 
 const navItems = [
+  { to: "/events", label: "Events", key: "events" },
   { to: "/session-overview", label: "Session Overview", key: "session" },
   { to: "/transcript", label: "Transcript", key: "transcript" },
   { to: "/chat-questions", label: "Chat & Questions", key: "chat" },
@@ -23,6 +34,7 @@ const navStateByKey = computed(() => {
   const hasWorkspace = Boolean(state.workspace);
   const transcriptReady = hasTranscriptData.value;
   const transcriptLoading = isTranscriptLoading.value;
+  const transcriptUnavailable = isTranscriptUnavailable.value;
   const isFreshSessionFetch =
     state.loading.sessionFetch &&
     (
@@ -32,6 +44,7 @@ const navStateByKey = computed(() => {
 
   if (isFreshSessionFetch) {
     return {
+      events: { disabled: true, loading: true, ready: false },
       session: { disabled: true, loading: true, ready: false },
       chat: { disabled: true, loading: true, ready: false },
       transcript: { disabled: true, loading: true, ready: false },
@@ -42,12 +55,13 @@ const navStateByKey = computed(() => {
   }
 
   return {
+    events: { disabled: !hasEvents.value, loading: state.loading.workspaceEvents, ready: hasEvents.value },
     session: { disabled: !hasWorkspace, loading: false, ready: hasWorkspace },
     chat: { disabled: !hasWorkspace, loading: false, ready: hasWorkspace },
-    transcript: { disabled: !hasWorkspace, loading: transcriptLoading, ready: transcriptReady },
-    analysis: { disabled: !transcriptReady, loading: transcriptLoading, ready: transcriptReady },
-    repurposing: { disabled: !transcriptReady, loading: transcriptLoading, ready: transcriptReady },
-    recap: { disabled: !transcriptReady, loading: transcriptLoading, ready: transcriptReady },
+    transcript: { disabled: !hasWorkspace || transcriptUnavailable, loading: transcriptLoading, ready: transcriptReady, unavailable: transcriptUnavailable },
+    analysis: { disabled: !transcriptReady || transcriptUnavailable, loading: transcriptLoading, ready: transcriptReady, unavailable: transcriptUnavailable },
+    repurposing: { disabled: !transcriptReady || transcriptUnavailable, loading: transcriptLoading, ready: transcriptReady, unavailable: transcriptUnavailable },
+    recap: { disabled: !transcriptReady || transcriptUnavailable, loading: transcriptLoading, ready: transcriptReady, unavailable: transcriptUnavailable },
   };
 });
 
@@ -97,6 +111,15 @@ async function handleFetchClick() {
     // The workspace store already surfaces a friendly message in the sidebar.
   }
 }
+
+async function handleFetchEventsClick() {
+  try {
+    router.push("/events");
+    await loadWorkspaceEvents();
+  } catch (_error) {
+    // The workspace store already surfaces a friendly message in the sidebar.
+  }
+}
 </script>
 
 <template>
@@ -109,7 +132,13 @@ async function handleFetchClick() {
         </div>
       </div>
 
-      <FetchSessionForm :state="state" @fetch="handleFetchClick" @connect="handleConnectClick" @logout="handleLogoutClick" />
+      <FetchSessionForm
+        :state="state"
+        @fetch="handleFetchClick"
+        @fetch-events="handleFetchEventsClick"
+        @connect="handleConnectClick"
+        @logout="handleLogoutClick"
+      />
 
       <p v-if="state.error" class="error-text">{{ state.error }}</p>
     </aside>
@@ -130,6 +159,7 @@ async function handleFetchClick() {
           >
             <span class="top-nav-item-text">{{ item.label }}</span>
             <span v-if="getNavMeta(item).loading" class="top-nav-status top-nav-status-loading" aria-hidden="true"></span>
+            <span v-else-if="getNavMeta(item).unavailable" class="top-nav-status top-nav-status-unavailable" aria-hidden="true"></span>
             <span v-else-if="getNavMeta(item).ready" class="top-nav-status top-nav-status-ready" aria-hidden="true"></span>
           </button>
         </RouterLink>

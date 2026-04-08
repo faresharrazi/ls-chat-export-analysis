@@ -12,7 +12,7 @@ import TimelinePauseChartCard from "../components/charts/transcript/TimelinePaus
 import WordsOverTimeChartCard from "../components/charts/transcript/WordsOverTimeChartCard.vue";
 import { useWorkspace } from "../store/workspace";
 
-const { state, saveSpeakerLabels } = useWorkspace();
+const { state, saveSpeakerLabels, isTranscriptUnavailable } = useWorkspace();
 const speakerNames = reactive({});
 const activeTab = ref("transcript");
 const showSpeakerEditor = ref(false);
@@ -937,6 +937,10 @@ const isTranscriptLoading = computed(
         <h3 class="loading-title">Transcript is still loading</h3>
         <p class="loading-copy">Session Overview and Chat &amp; Questions are ready. Transcript data will appear here as soon as processing finishes.</p>
       </div>
+    </section>
+    <section v-else-if="isTranscriptUnavailable" class="panel helper-panel">
+      <h3 class="loading-title">Transcript unavailable for this session</h3>
+      <p class="loading-copy">{{ state.transcriptUnavailableReason }}</p>
     </section>
   </section>
 </template>
