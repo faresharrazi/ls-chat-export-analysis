@@ -145,7 +145,7 @@ def get_cached_session_workspace(session_id: str) -> Response:
 @app.post("/api/sessions/{session_id}/fetch")
 def fetch_session_workspace(session_id: str, request: FetchSessionRequest) -> Dict[str, Any]:
     try:
-        transcript_api_key = str(request.transcript_api_key or "").strip() or get_runtime_secret("API_AUTH_KEY", "")
+        transcript_api_key = str(request.transcript_api_key or "").strip() or get_runtime_secret("GLADIA_KEY", "")
         return fetch_all_session_data(
             api_key=request.api_key,
             transcript_api_key=transcript_api_key,
@@ -173,7 +173,7 @@ def fetch_session_base_workspace(session_id: str, request: FetchSessionRequest) 
 @app.post("/api/sessions/{session_id}/fetch-transcript")
 def fetch_session_transcript_workspace(session_id: str, request: FetchSessionRequest) -> Dict[str, Any]:
     try:
-        transcript_api_key = str(request.transcript_api_key or "").strip() or get_runtime_secret("API_AUTH_KEY", "")
+        transcript_api_key = str(request.transcript_api_key or "").strip() or get_runtime_secret("GLADIA_KEY", "")
         return fetch_session_transcript_data(
             api_key=request.api_key,
             transcript_api_key=transcript_api_key,

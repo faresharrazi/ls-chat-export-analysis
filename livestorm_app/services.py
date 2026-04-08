@@ -3,7 +3,6 @@ import logging
 import math
 import re
 import sys
-import time
 from collections import Counter
 from io import BytesIO
 from pathlib import Path
@@ -31,18 +30,11 @@ from livestorm_app.config import (
     SMART_RECAP_PROFESSIONAL_PROMPT_PATH,
     SMART_RECAP_SURPRISE_PROMPT_PATH,
     START_PAGE_NUMBER,
-    TRANSCRIPT_JOBS_API_URL,
 )
 from livestorm_app.session_overview import build_session_stats
 
 
 logger = logging.getLogger(__name__)
-
-
-TRANSCRIPT_POLL_INTERVAL_SECONDS = 3
-TRANSCRIPT_TIMEOUT_SECONDS = 15 * 60
-TRANSCRIPT_TERMINAL_STATUSES = {"completed", "failed"}
-TRANSCRIPT_ACTIVE_STATUSES = {"queued", "running"}
 
 
 COMMON_STOPWORDS = {
@@ -66,24 +58,6 @@ def build_headers(key: str) -> Dict[str, str]:
         "Authorization": key,
         "accept": "application/vnd.api+json",
     }
-
-
-def build_transcript_headers(key: str) -> Dict[str, str]:
-    return {
-        "X-API-Key": key,
-        "accept": "application/json",
-        "Content-Type": "application/json",
-    }
-
-
-class TranscriptJobError(RuntimeError):
-    def __init__(self, message: str, job_payload: Optional[Dict[str, Any]] = None):
-        super().__init__(message)
-        self.job_payload = job_payload or {}
-
-
-class TranscriptJobTimeoutError(TranscriptJobError):
-    pass
 
 
 def format_livestorm_http_error(exc: requests.HTTPError, resource_label: str) -> str:
@@ -157,7 +131,7 @@ def format_generic_http_error(exc: requests.HTTPError, resource_label: str) -> s
             "Content Repurposing",
             "Content Repurposing PDF",
         }
-        credential_label = "OpenAI API key" if resource_label in openai_resources else "transcript API token"
+        credential_label = "OpenAI API key" if resource_label in openai_resources else "Gladia API key"
         return (
             f"{resource_label} request was unauthorized (HTTP {status_code}). "
             f"Please check the configured {credential_label}."
@@ -218,22 +192,6 @@ def build_request_exception_debug_details(exc: requests.RequestException, resour
     if request is not None:
         details["method"] = request.method
         details["url"] = details.get("url") or request.url
-    return details
-
-
-def build_transcript_job_debug_details(job_payload: Dict[str, Any], resource_label: str = "Transcript") -> Dict[str, Any]:
-    details: Dict[str, Any] = {
-        "resource": resource_label,
-        "job_id": job_payload.get("job_id"),
-        "status": job_payload.get("status"),
-        "session_id": job_payload.get("session_id"),
-        "timestamped": job_payload.get("timestamped"),
-        "created_at": job_payload.get("created_at"),
-        "updated_at": job_payload.get("updated_at"),
-    }
-    error = job_payload.get("error")
-    if isinstance(error, dict):
-        details["error"] = error
     return details
 
 
@@ -620,108 +578,6 @@ def fetch_event_past_sessions(key: str, event: str, page_size: int = DEFAULT_PAG
     final_payload["pages_fetched"] = pages_fetched
     final_payload["requested_page_size"] = page_size
     return final_payload
-
-
-def create_transcript_job(key: str, session: str, timestamped: bool = True) -> Dict[str, Any]:
-    resp = requests.post(
-        TRANSCRIPT_JOBS_API_URL,
-        headers=build_transcript_headers(key),
-        json={"session_id": session, "timestamped": bool(timestamped)},
-        timeout=30,
-    )
-    resp.raise_for_status()
-    payload = resp.json()
-    if not isinstance(payload, dict):
-        return {"job_id": "", "status": "queued", "result": payload}
-    return payload
-
-
-def get_transcript_job(key: str, job_id: str) -> Dict[str, Any]:
-    resp = requests.get(
-        f"{TRANSCRIPT_JOBS_API_URL}/{job_id}",
-        headers=build_transcript_headers(key),
-        timeout=30,
-    )
-    resp.raise_for_status()
-    payload = resp.json()
-    if not isinstance(payload, dict):
-        return {"job_id": job_id, "status": "", "result": payload}
-    return payload
-
-
-def wait_for_transcript_job(
-    key: str,
-    job_id: str,
-    poll_interval_seconds: int = TRANSCRIPT_POLL_INTERVAL_SECONDS,
-    timeout_seconds: int = TRANSCRIPT_TIMEOUT_SECONDS,
-    on_poll: Optional[Callable[[Dict[str, Any]], None]] = None,
-) -> Dict[str, Any]:
-    started_at = time.monotonic()
-    last_request_error: Optional[requests.RequestException] = None
-
-    while True:
-        if time.monotonic() - started_at > timeout_seconds:
-            raise TranscriptJobTimeoutError(
-                "Transcript job timed out after 15 minutes.",
-                {"job_id": job_id, "status": "timeout"},
-            )
-
-        try:
-            payload = get_transcript_job(key, job_id)
-            last_request_error = None
-        except requests.RequestException as exc:
-            last_request_error = exc
-            time.sleep(poll_interval_seconds)
-            continue
-
-        if on_poll is not None:
-            on_poll(payload)
-
-        status = str(payload.get("status") or "").strip().lower()
-        if status == "completed":
-            result = payload.get("result")
-            if isinstance(result, dict) and isinstance(result.get("transcript"), dict):
-                return payload
-            if isinstance(result, dict) and isinstance(result.get("transcription"), dict):
-                return payload
-            raise TranscriptJobError("Transcript job completed without a supported transcript result.", payload)
-        if status == "failed":
-            error = payload.get("error")
-            message = error.get("message") if isinstance(error, dict) else None
-            raise TranscriptJobError(message or "Transcript job failed.", payload)
-        if status not in TRANSCRIPT_ACTIVE_STATUSES:
-            raise TranscriptJobError(f"Transcript job returned unexpected status '{status or 'unknown'}'.", payload)
-
-        time.sleep(poll_interval_seconds)
-
-    if last_request_error is not None:
-        raise last_request_error
-
-
-def fetch_session_transcript(
-    key: str,
-    session: str,
-    verbose: bool = True,
-    existing_job_id: str = "",
-    on_poll: Optional[Callable[[Dict[str, Any]], None]] = None,
-) -> Dict[str, Any]:
-    job_id = str(existing_job_id).strip()
-    if not job_id:
-        job = create_transcript_job(key, session, timestamped=bool(verbose))
-        job_id = str(job.get("job_id") or "").strip()
-        if not job_id:
-            raise TranscriptJobError("Transcript job was created without a job ID.", job)
-        if on_poll is not None:
-            on_poll(job)
-
-    transcript_payload = wait_for_transcript_job(
-        key,
-        job_id,
-        poll_interval_seconds=TRANSCRIPT_POLL_INTERVAL_SECONDS,
-        timeout_seconds=TRANSCRIPT_TIMEOUT_SECONDS,
-        on_poll=on_poll,
-    )
-    return transcript_payload
 
 
 def fetch_chat_and_questions_bundle(key: str, session_id: str) -> Dict[str, Any]:

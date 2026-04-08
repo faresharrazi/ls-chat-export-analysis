@@ -30,19 +30,17 @@ from livestorm_app.services import (
     build_transcript_display_text,
     build_transcript_insights,
     build_transcript_plain_text,
-    create_transcript_job,
-    fetch_session_transcript,
     fetch_chat_and_questions_bundle,
     fetch_event_past_sessions,
     fetch_session_details,
     format_generic_http_error,
     format_livestorm_http_error,
     generate_content_repurpose_bundle_with_openai,
-    get_transcript_job,
     translate_content_repurpose_bundle_with_openai,
     translate_markdown_with_openai,
 )
 from livestorm_app.session_overview import build_compact_session_payload_for_llm, build_session_overview_data
+from livestorm_app.transcript_client import fetch_session_transcript
 
 
 def _sanitize_json_value(value: Any) -> Any:
@@ -223,11 +221,15 @@ def fetch_all_session_data(api_key: str, transcript_api_key: str, session_id: st
 
     transcript_api_key = str(transcript_api_key or "").strip()
     if not transcript_api_key:
-        raise RuntimeError("Transcript API key is not configured on the server. Set API_AUTH_KEY before fetching uncached sessions.")
+        raise RuntimeError("Gladia API key is not configured on the server. Set GLADIA_KEY before fetching uncached sessions.")
 
     session_payload = fetch_session_details(api_key, session_id)
     chat_bundle = fetch_chat_and_questions_bundle(api_key, session_id)
-    transcript_payload = fetch_session_transcript(transcript_api_key, session_id, verbose=True)
+    transcript_payload = fetch_session_transcript(
+        transcript_api_key,
+        session_id,
+        livestorm_api_key=api_key,
+    )
     upsert_cached_session(
         api_key,
         session_id,
@@ -273,9 +275,13 @@ def fetch_session_transcript_data(api_key: str, transcript_api_key: str, session
 
     transcript_api_key = str(transcript_api_key or "").strip()
     if not transcript_api_key:
-        raise RuntimeError("Transcript API key is not configured on the server. Set API_AUTH_KEY before fetching uncached sessions.")
+        raise RuntimeError("Gladia API key is not configured on the server. Set GLADIA_KEY before fetching uncached sessions.")
 
-    transcript_payload = fetch_session_transcript(transcript_api_key, session_id, verbose=True)
+    transcript_payload = fetch_session_transcript(
+        transcript_api_key,
+        session_id,
+        livestorm_api_key=api_key,
+    )
     upsert_cached_session(
         api_key,
         session_id,

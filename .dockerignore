@@ -19,5 +19,6 @@ frontend/.vite
 frontend/.DS_Store
 .DS_Store
 *.log
+*.transcript.json
 .vscode
 .idea

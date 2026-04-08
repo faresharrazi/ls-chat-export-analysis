@@ -12,6 +12,7 @@ output/
 .vscode/
 .idea/
 *.log
+*.transcript.json
 frontend/node_modules/
 frontend/dist/
 frontend/.vite/
