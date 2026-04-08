@@ -62,7 +62,7 @@ function setSource(source) {
           title="Disconnect"
           @click="emit('logout')"
         >
-          <span class="oauth-disconnect-icon" aria-hidden="true"></span>
+          Disconnect
         </button>
       </div>
     </div>
