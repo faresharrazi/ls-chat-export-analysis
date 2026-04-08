@@ -193,6 +193,22 @@ textarea {
   transition: border-color 140ms ease, box-shadow 140ms ease, background 140ms ease;
 }
 
+.sidebar select,
+.event-card-session-picker select {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  padding-right: 3rem;
+  background-image:
+    linear-gradient(45deg, transparent 50%, rgba(240, 248, 250, 0.95) 50%),
+    linear-gradient(135deg, rgba(240, 248, 250, 0.95) 50%, transparent 50%);
+  background-position:
+    calc(100% - 1.2rem) calc(50% - 0.16rem),
+    calc(100% - 0.8rem) calc(50% - 0.16rem);
+  background-size: 0.48rem 0.48rem, 0.48rem 0.48rem;
+  background-repeat: no-repeat;
+}
+
 .sidebar input:focus,
 .sidebar select:focus {
   border-color: rgba(94, 197, 220, 0.66);
