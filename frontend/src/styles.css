@@ -1177,7 +1177,7 @@ textarea {
   min-height: 2rem;
   padding: 0.45rem 0.8rem;
   border-radius: 999px;
-  justify-self: end;
+  justify-self: center;
   display: inline-flex;
   align-items: center;
   justify-content: center;
