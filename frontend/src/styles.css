@@ -287,6 +287,59 @@ textarea {
   box-shadow: 0 0 0 4px rgba(45, 132, 151, 0.18);
 }
 
+.transcript-download-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+}
+
+.transcript-download-label {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #bcd2d8;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.transcript-download-controls select {
+  min-width: 5.5rem;
+  border-radius: 12px;
+  border: 1px solid rgba(210, 232, 237, 0.14);
+  padding: 0.58rem 2.3rem 0.58rem 0.8rem;
+  background-color: rgba(10, 25, 29, 0.55);
+  color: #f3f8fa;
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2.25 4.5 6 8.25 9.75 4.5' fill='none' stroke='%23eef8fb' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-position: calc(100% - 0.8rem) 50%;
+  background-size: 0.82rem 0.82rem;
+  background-repeat: no-repeat;
+}
+
+.transcript-download-controls select:focus {
+  outline: none;
+  border-color: rgba(94, 197, 220, 0.66);
+  box-shadow: 0 0 0 4px rgba(45, 132, 151, 0.18);
+}
+
+.transcript-download-button {
+  border: 1px solid rgba(164, 211, 224, 0.24);
+  border-radius: 12px;
+  background: rgba(20, 38, 44, 0.9);
+  color: #fff;
+  padding: 0.58rem 0.9rem;
+  cursor: pointer;
+  font-weight: 600;
+  transition: transform 140ms ease, background 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.transcript-download-button:hover {
+  transform: translateY(-1px);
+  border-color: rgba(134, 216, 233, 0.34);
+}
+
 .main-content {
   padding: 1.5rem 1.75rem 2rem;
   min-width: 0;

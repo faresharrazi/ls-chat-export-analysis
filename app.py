@@ -104,6 +104,10 @@ def _resolve_livestorm_auth(raw_api_key: str, request: Request) -> str:
     direct_api_key = str(raw_api_key or "").strip()
     if direct_api_key:
         return direct_api_key
+    if _allow_local_api_key_fallback(request):
+        local_api_key = get_runtime_secret("LS_API_KEY", "")
+        if str(local_api_key or "").strip():
+            return str(local_api_key).strip()
     connection_id = str(request.cookies.get(LIVESTORM_OAUTH_COOKIE) or "").strip()
     if not connection_id:
         raise HTTPException(
@@ -132,7 +136,17 @@ def _get_bootstrap_auth(request: Request) -> Dict[str, Any]:
     return {
         "oauthEnabled": oauth_enabled(),
         "connectedUser": get_connection_identity(connection),
+        "allowLocalApiKeyFallback": _allow_local_api_key_fallback(request),
     }
+
+
+def _allow_local_api_key_fallback(request: Request | None) -> bool:
+    if request is None:
+        return False
+    hostname = str(request.url.hostname or "").strip().lower()
+    if hostname not in {"127.0.0.1", "localhost", "::1"}:
+        return False
+    return bool(str(get_runtime_secret("LS_API_KEY", "") or "").strip())
 
 
 load_env_file()
@@ -163,7 +177,7 @@ def healthcheck() -> Dict[str, str]:
 def bootstrap_defaults(request: Request) -> Dict[str, Any]:
     auth = _get_bootstrap_auth(request)
     default_api_key = ""
-    if ENV_PATH.exists() and not auth.get("oauthEnabled"):
+    if ENV_PATH.exists() and (not auth.get("oauthEnabled") or auth.get("allowLocalApiKeyFallback")):
         default_api_key = get_runtime_secret("LS_API_KEY", "")
     return {
         "defaults": {

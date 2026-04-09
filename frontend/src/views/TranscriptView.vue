@@ -17,6 +17,7 @@ const speakerNames = reactive({});
 const activeTab = ref("transcript");
 const showSpeakerEditor = ref(false);
 const transcriptSearch = ref("");
+const selectedSubtitleFormat = ref("srt");
 
 function mapSpeakerLabel(value) {
   const key = String(value || "").trim();
@@ -66,6 +67,17 @@ function downloadTranscriptJson() {
   );
 }
 
+function downloadSubtitleFile() {
+  const subtitle = availableSubtitles.value.find((item) => item.format === selectedSubtitleFormat.value);
+  if (!subtitle?.subtitles) return;
+  const sessionId = state.workspace?.sessionId || "session";
+  downloadBlob(
+    `livestorm-subtitles-${sessionId}.${subtitle.format}`,
+    subtitle.subtitles,
+    subtitle.format === "vtt" ? "text/vtt;charset=utf-8;" : "text/plain;charset=utf-8;",
+  );
+}
+
 watch(
   () => state.workspace?.speakerNames,
   (nextNames) => {
@@ -80,6 +92,14 @@ watch(
 
 const transcriptText = computed(() => state.workspace?.text?.transcriptDisplay || "");
 const transcriptPayload = computed(() => state.workspace?.payloads?.transcript || null);
+const availableSubtitles = computed(() =>
+  ((transcriptPayload.value?.subtitles || []).filter(
+    (item) => item && typeof item === "object" && String(item.format || "").trim() && String(item.subtitles || "").trim(),
+  )).map((item) => ({
+    format: String(item.format).trim().toLowerCase(),
+    subtitles: String(item.subtitles),
+  }))
+);
 const transcriptSegments = computed(() => state.workspace?.tables?.transcriptSegments || []);
 const transcriptKeyMoments = computed(() => state.workspace?.tables?.transcriptKeyMoments || []);
 const transcriptSpeakers = computed(() => state.workspace?.tables?.transcriptSpeakers || []);
@@ -551,6 +571,21 @@ const hasTranscriptData = computed(
 const isTranscriptLoading = computed(
   () => Boolean(state.workspace) && state.loading.sessionFetch && !hasTranscriptData.value,
 );
+
+watch(
+  availableSubtitles,
+  (subtitles) => {
+    if (!subtitles.length) {
+      selectedSubtitleFormat.value = "srt";
+      return;
+    }
+    const selectedStillExists = subtitles.some((item) => item.format === selectedSubtitleFormat.value);
+    if (!selectedStillExists) {
+      selectedSubtitleFormat.value = subtitles[0].format;
+    }
+  },
+  { immediate: true },
+);
 </script>
 
 <template>
@@ -613,6 +648,17 @@ const isTranscriptLoading = computed(
                     fill="currentColor"
                   />
                 </svg>
+              </button>
+            </div>
+            <div v-if="availableSubtitles.length" class="transcript-download-controls">
+              <span class="transcript-download-label">Subtitles</span>
+              <select v-model="selectedSubtitleFormat" aria-label="Select subtitle format">
+                <option v-for="subtitle in availableSubtitles" :key="subtitle.format" :value="subtitle.format">
+                  {{ subtitle.format.toUpperCase() }}
+                </option>
+              </select>
+              <button class="transcript-download-button" type="button" @click="downloadSubtitleFile">
+                Download
               </button>
             </div>
           </div>

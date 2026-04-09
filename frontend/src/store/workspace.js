@@ -6,6 +6,7 @@ const state = reactive({
   auth: {
     oauthEnabled: false,
     connectedUser: null,
+    allowLocalApiKeyFallback: false,
   },
   inputMode: "session",
   sessionId: "",
@@ -77,14 +78,16 @@ async function wrapCall(flag, fn) {
 function applyBootstrap(payload) {
   const defaultApiKey = String(payload?.defaults?.apiKey || "").trim();
   const connectedUser = payload?.auth?.connectedUser || null;
+  const allowLocalApiKeyFallback = Boolean(payload?.auth?.allowLocalApiKeyFallback);
   state.auth.oauthEnabled = Boolean(payload?.auth?.oauthEnabled) || Boolean(connectedUser);
   state.auth.connectedUser = connectedUser;
-  if (state.auth.oauthEnabled) {
+  state.auth.allowLocalApiKeyFallback = allowLocalApiKeyFallback;
+  if (defaultApiKey && (!state.apiKey || allowLocalApiKeyFallback)) {
+    state.apiKey = defaultApiKey;
+  }
+  if (state.auth.oauthEnabled && !allowLocalApiKeyFallback) {
     state.apiKey = "";
     return;
-  }
-  if (defaultApiKey && !state.apiKey) {
-    state.apiKey = defaultApiKey;
   }
 }
 
