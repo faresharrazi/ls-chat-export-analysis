@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { RouterLink, RouterView, useRoute, useRouter } from "vue-router";
 import { api } from "./api";
 import FetchSessionForm from "./components/FetchSessionForm.vue";
@@ -20,6 +20,9 @@ const router = useRouter();
 const logoUrl = "/brand-assets/icons/Icon-Livestorm-Tertiary-Light.png";
 const hasEvents = computed(() => state.workspaceEvents.length > 0);
 const sidebarCollapsed = ref(false);
+const isCompactViewport = ref(false);
+const mainNavOpen = ref(true);
+const COMPACT_BREAKPOINT = 1100;
 
 const navItems = [
   { to: "/events", label: "Events", key: "events" },
@@ -70,7 +73,17 @@ function getNavMeta(item) {
   return navStateByKey.value[item.key] || { disabled: false, loading: false, ready: false };
 }
 
+function syncViewportMode() {
+  if (typeof window === "undefined") return;
+  const nextCompact = window.innerWidth <= COMPACT_BREAKPOINT;
+  isCompactViewport.value = nextCompact;
+  sidebarCollapsed.value = nextCompact;
+  mainNavOpen.value = !nextCompact;
+}
+
 onMounted(async () => {
+  syncViewportMode();
+  window.addEventListener("resize", syncViewportMode);
   try {
     const bootstrap = await api.bootstrap();
     applyBootstrap(bootstrap);
@@ -79,6 +92,12 @@ onMounted(async () => {
     }
   } catch (_error) {
     // Ignore bootstrap failures so manual entry still works without friction.
+  }
+});
+
+onBeforeUnmount(() => {
+  if (typeof window !== "undefined") {
+    window.removeEventListener("resize", syncViewportMode);
   }
 });
 
@@ -125,24 +144,63 @@ async function handleFetchEventsClick() {
 function toggleSidebar() {
   sidebarCollapsed.value = !sidebarCollapsed.value;
 }
+
+function toggleMainNav() {
+  mainNavOpen.value = !mainNavOpen.value;
+}
+
+function handleNavClick(navigate) {
+  navigate();
+  if (isCompactViewport.value) {
+    mainNavOpen.value = false;
+  }
+}
 </script>
 
 <template>
-  <div class="layout" :class="{ 'layout-sidebar-collapsed': sidebarCollapsed }">
-    <aside class="sidebar" :class="{ collapsed: sidebarCollapsed }">
+  <div
+    class="layout"
+    :class="{
+      'layout-sidebar-collapsed': sidebarCollapsed,
+      'layout-compact': isCompactViewport,
+      'layout-compact-sidebar-open': isCompactViewport && !sidebarCollapsed,
+    }"
+  >
+    <div
+      v-if="isCompactViewport && !sidebarCollapsed"
+      class="sidebar-backdrop"
+      aria-hidden="true"
+      @click="sidebarCollapsed = true"
+    ></div>
+    <div
+      v-if="isCompactViewport && mainNavOpen"
+      class="nav-backdrop"
+      aria-hidden="true"
+      @click="mainNavOpen = false"
+    ></div>
+
+    <aside class="sidebar" :class="{ collapsed: sidebarCollapsed, compact: isCompactViewport }">
       <div class="sidebar-brand" :class="{ collapsed: sidebarCollapsed }">
-        <img :src="logoUrl" alt="Livestorm" class="brand-logo" />
+        <button
+          type="button"
+          class="brand-logo-button"
+          :aria-label="sidebarCollapsed ? 'Open navigation and controls' : 'Close navigation and controls'"
+          @click="toggleSidebar()"
+        >
+          <img :src="logoUrl" alt="Livestorm" class="brand-logo" />
+        </button>
         <div v-if="!sidebarCollapsed" class="brand-copy">
           <h1>StormIQ</h1>
         </div>
         <button
+          v-if="isCompactViewport"
           type="button"
           class="sidebar-toggle sidebar-toggle-inside"
           :aria-expanded="String(!sidebarCollapsed)"
-          :aria-label="sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'"
+          :aria-label="sidebarCollapsed ? 'Open navigation and controls' : 'Close navigation and controls'"
           @click="toggleSidebar"
         >
-          <span aria-hidden="true">{{ sidebarCollapsed ? "›" : "‹" }}</span>
+          <span aria-hidden="true">{{ sidebarCollapsed ? "☰" : "✕" }}</span>
         </button>
       </div>
 
@@ -169,7 +227,28 @@ function toggleSidebar() {
     </aside>
 
     <main class="main-content">
-      <nav class="top-nav">
+      <div v-if="isCompactViewport" class="compact-topbar">
+        <button
+          type="button"
+          class="compact-topbar-toggle"
+          :aria-expanded="String(mainNavOpen)"
+          :aria-label="mainNavOpen ? 'Close section navigation' : 'Open section navigation'"
+          @click="toggleMainNav"
+        >
+          <span aria-hidden="true">{{ mainNavOpen ? "✕" : "☰" }}</span>
+        </button>
+        <button
+          type="button"
+          class="compact-topbar-logo-button"
+          :aria-expanded="String(!sidebarCollapsed)"
+          :aria-label="sidebarCollapsed ? 'Open navigation and controls' : 'Close navigation and controls'"
+          @click="toggleSidebar"
+        >
+          <img :src="logoUrl" alt="StormIQ" class="compact-topbar-logo" />
+        </button>
+      </div>
+
+      <nav class="top-nav" :class="{ 'top-nav-compact-open': isCompactViewport && mainNavOpen }">
         <RouterLink v-for="item in navItems" :key="item.to" :to="item.to" custom v-slot="{ navigate }">
           <button
             type="button"
@@ -180,7 +259,7 @@ function toggleSidebar() {
               loading: getNavMeta(item).loading,
             }"
             :disabled="getNavMeta(item).disabled"
-            @click="navigate"
+            @click="handleNavClick(navigate)"
           >
             <span class="top-nav-item-text">{{ item.label }}</span>
             <span v-if="getNavMeta(item).loading" class="top-nav-status top-nav-status-loading" aria-hidden="true"></span>
