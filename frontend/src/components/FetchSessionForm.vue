@@ -9,7 +9,8 @@ const props = defineProps({
 });
 
 const emit = defineEmits(["fetch", "fetch-events", "connect", "logout"]);
-const isOAuthMode = computed(() => Boolean(props.state.auth?.oauthEnabled || props.state.auth?.connectedUser));
+const isLocalApiKeyMode = computed(() => Boolean(props.state.auth?.allowLocalApiKeyFallback && props.state.apiKey));
+const isOAuthMode = computed(() => !isLocalApiKeyMode.value && Boolean(props.state.auth?.oauthEnabled || props.state.auth?.connectedUser));
 const isConnected = computed(() => Boolean(props.state.auth?.connectedUser));
 const canUseLivestormAuth = computed(() => (isOAuthMode.value ? isConnected.value : Boolean(props.state.apiKey)));
 const isFetchAreaDisabled = computed(() => isOAuthMode.value && !isConnected.value);
@@ -44,6 +45,9 @@ function setSource(source) {
   <section class="control-card">
     <div v-if="!isOAuthMode" class="field-group">
       <input v-model="props.state.apiKey" type="password" placeholder="Livestorm API Key" />
+      <p v-if="isLocalApiKeyMode" class="field-hint">
+        Local development mode is using the server-side <code>LS_API_KEY</code> fallback.
+      </p>
     </div>
 
     <div v-else class="field-group oauth-panel">

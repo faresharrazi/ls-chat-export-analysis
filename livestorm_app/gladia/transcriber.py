@@ -36,6 +36,10 @@ DEFAULT_GLADIA_OPTIONS: dict[str, Any] = {
     "diarization": True,
     "named_entity_recognition": True,
     "sentences": True,
+    "subtitles": True,
+    "subtitles_config": {
+        "formats": ["srt", "vtt"],
+    },
 }
 
 
@@ -462,6 +466,125 @@ def _shift_timed_dict(entry: dict[str, Any], offset_seconds: float) -> dict[str,
     return shifted
 
 
+def _parse_subtitle_timestamp(value: str) -> float | None:
+    match = re.fullmatch(r"(?:(\d{2}):)?(\d{2}):(\d{2})[,.](\d{3})", value.strip())
+    if not match:
+        return None
+
+    hours = int(match.group(1) or 0)
+    minutes = int(match.group(2))
+    seconds = int(match.group(3))
+    milliseconds = int(match.group(4))
+    return float(hours * 3600 + minutes * 60 + seconds + (milliseconds / 1000.0))
+
+
+def _format_subtitle_timestamp(total_seconds: float, *, use_comma: bool) -> str:
+    total_milliseconds = max(0, int(round(total_seconds * 1000)))
+    hours, remainder = divmod(total_milliseconds, 3_600_000)
+    minutes, remainder = divmod(remainder, 60_000)
+    seconds, milliseconds = divmod(remainder, 1000)
+    separator = "," if use_comma else "."
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}{separator}{milliseconds:03d}"
+
+
+def _parse_subtitle_cues(subtitle_text: str) -> list[dict[str, Any]]:
+    normalized_text = str(subtitle_text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not normalized_text:
+        return []
+
+    cues: list[dict[str, Any]] = []
+    for raw_block in re.split(r"\n\s*\n", normalized_text):
+        block = raw_block.strip()
+        if not block or block == "WEBVTT" or block.startswith("NOTE"):
+            continue
+
+        lines = [line.rstrip() for line in block.split("\n")]
+        if lines and re.fullmatch(r"\d+", lines[0].strip()):
+            lines = lines[1:]
+        if not lines:
+            continue
+
+        timing_line = lines[0].strip()
+        if "-->" not in timing_line:
+            continue
+
+        start_raw, end_raw = [part.strip() for part in timing_line.split("-->", 1)]
+        end_parts = end_raw.split(maxsplit=1)
+        end_timestamp_raw = end_parts[0].strip() if end_parts else ""
+        settings = end_parts[1].strip() if len(end_parts) > 1 else ""
+
+        start_seconds = _parse_subtitle_timestamp(start_raw)
+        end_seconds = _parse_subtitle_timestamp(end_timestamp_raw)
+        if start_seconds is None or end_seconds is None:
+            continue
+
+        cues.append(
+            {
+                "start": start_seconds,
+                "end": end_seconds,
+                "settings": settings,
+                "text_lines": lines[1:],
+            }
+        )
+
+    return cues
+
+
+def _render_subtitle_cues(cues: list[dict[str, Any]], subtitle_format: str) -> str:
+    normalized_format = str(subtitle_format or "").strip().lower()
+    use_comma = normalized_format == "srt"
+    blocks: list[str] = []
+
+    if normalized_format == "vtt":
+        blocks.append("WEBVTT")
+
+    for index, cue in enumerate(cues, start=1):
+        start_value = _format_subtitle_timestamp(float(cue.get("start") or 0.0), use_comma=use_comma)
+        end_value = _format_subtitle_timestamp(float(cue.get("end") or 0.0), use_comma=use_comma)
+        settings = str(cue.get("settings") or "").strip()
+        timing_line = f"{start_value} --> {end_value}"
+        if settings:
+            timing_line = f"{timing_line} {settings}"
+
+        text_lines = [str(line) for line in cue.get("text_lines") or []]
+        if normalized_format == "srt":
+            block_lines = [str(index), timing_line, *text_lines]
+        else:
+            block_lines = [timing_line, *text_lines]
+        blocks.append("\n".join(block_lines).rstrip())
+
+    return "\n\n".join(blocks).strip() + ("\n" if blocks else "")
+
+
+def _extract_subtitles(gladia_payload: dict[str, Any]) -> list[dict[str, str]]:
+    result = gladia_payload.get("result")
+    if not isinstance(result, dict):
+        return []
+
+    transcription = result.get("transcription")
+    if not isinstance(transcription, dict):
+        return []
+
+    subtitles = transcription.get("subtitles")
+    if not isinstance(subtitles, list):
+        return []
+
+    normalized_subtitles: list[dict[str, str]] = []
+    for subtitle in subtitles:
+        if not isinstance(subtitle, dict):
+            continue
+        subtitle_format = str(subtitle.get("format") or "").strip().lower()
+        subtitle_text = str(subtitle.get("subtitles") or "").strip()
+        if subtitle_format and subtitle_text:
+            normalized_subtitles.append(
+                {
+                    "format": subtitle_format,
+                    "subtitles": subtitle_text,
+                }
+            )
+    return normalized_subtitles
+
+
 def _merge_chunk_results(chunk_results: list[dict[str, Any]]) -> dict[str, Any]:
     if not chunk_results:
         raise RuntimeError("No chunk transcriptions were produced.")
@@ -476,6 +599,7 @@ def _merge_chunk_results(chunk_results: list[dict[str, Any]]) -> dict[str, Any]:
     merged_utterances: list[dict[str, Any]] = []
     merged_words: list[dict[str, Any]] = []
     merged_sentences: list[dict[str, Any]] = []
+    merged_subtitle_cues_by_format: dict[str, list[dict[str, Any]]] = {}
     merged_duration_seconds = 0.0
     detected_language: str | None = None
 
@@ -512,6 +636,29 @@ def _merge_chunk_results(chunk_results: list[dict[str, Any]]) -> dict[str, Any]:
                     if isinstance(sentence, dict):
                         merged_sentences.append(_shift_timed_dict(sentence, offset_seconds))
 
+            subtitles = transcription.get("subtitles")
+            if isinstance(subtitles, list):
+                for subtitle in subtitles:
+                    if not isinstance(subtitle, dict):
+                        continue
+                    subtitle_format = str(subtitle.get("format") or "").strip().lower()
+                    subtitle_text = str(subtitle.get("subtitles") or "").strip()
+                    if not subtitle_format or not subtitle_text:
+                        continue
+                    cues = _parse_subtitle_cues(subtitle_text)
+                    if not cues:
+                        continue
+                    shifted_cues = []
+                    for cue in cues:
+                        shifted_cues.append(
+                            {
+                                **cue,
+                                "start": float(cue.get("start") or 0.0) + offset_seconds,
+                                "end": float(cue.get("end") or 0.0) + offset_seconds,
+                            }
+                        )
+                    merged_subtitle_cues_by_format.setdefault(subtitle_format, []).extend(shifted_cues)
+
     merged_result = merged_payload.setdefault("result", {})
     if not isinstance(merged_result, dict):
         merged_result = {}
@@ -529,6 +676,15 @@ def _merge_chunk_results(chunk_results: list[dict[str, Any]]) -> dict[str, Any]:
     merged_transcription["words"] = merged_words
     if merged_sentences:
         merged_transcription["sentences"] = merged_sentences
+    if merged_subtitle_cues_by_format:
+        merged_transcription["subtitles"] = [
+            {
+                "format": subtitle_format,
+                "subtitles": _render_subtitle_cues(cues, subtitle_format),
+            }
+            for subtitle_format, cues in merged_subtitle_cues_by_format.items()
+            if cues
+        ]
 
     existing_languages = merged_transcription.get("languages")
     if not existing_languages and detected_language:
@@ -577,6 +733,7 @@ def _normalize_transcription(
     normalized["duration_seconds"] = _extract_duration_seconds(gladia_payload)
     normalized["segments"] = segments
     normalized["words"] = words
+    normalized["subtitles"] = _extract_subtitles(gladia_payload)
     if session_id:
         normalized["session_id"] = session_id
     if recording:
