@@ -71,6 +71,7 @@ textarea {
 .sidebar.collapsed {
   padding: 1rem 1rem;
   align-items: center;
+  overflow: visible;
 }
 
 .sidebar-brand {
@@ -83,6 +84,7 @@ textarea {
 .sidebar-brand.collapsed {
   justify-content: flex-start;
   gap: 0.85rem;
+  justify-content: center;
 }
 
 .sidebar-toggle {
@@ -112,6 +114,10 @@ textarea {
 
 .sidebar.collapsed .sidebar-toggle-inside {
   margin-left: 0;
+  position: fixed;
+  left: 82px;
+  top: 1.45rem;
+  z-index: 20;
 }
 
 .layout-sidebar-collapsed .main-content {
