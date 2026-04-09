@@ -6,7 +6,6 @@ import HistogramChartCard from "../components/charts/transcript/HistogramChartCa
 import PaceOverTimeChartCard from "../components/charts/transcript/PaceOverTimeChartCard.vue";
 import SpeakerShareChartCard from "../components/charts/transcript/SpeakerShareChartCard.vue";
 import SpeakerTimelineChartCard from "../components/charts/transcript/SpeakerTimelineChartCard.vue";
-import SpeakerTurnsTimelineChartCard from "../components/charts/transcript/SpeakerTurnsTimelineChartCard.vue";
 import SpeakingBurstChartCard from "../components/charts/transcript/SpeakingBurstChartCard.vue";
 import TimelinePauseChartCard from "../components/charts/transcript/TimelinePauseChartCard.vue";
 import WordsOverTimeChartCard from "../components/charts/transcript/WordsOverTimeChartCard.vue";
@@ -26,6 +25,15 @@ function mapSpeakerLabel(value) {
 
 async function handleSaveSpeakerLabels() {
   await saveSpeakerLabels(speakerNames);
+  showSpeakerEditor.value = false;
+}
+
+function handleCancelSpeakerLabels() {
+  const normalized = state.workspace?.speakerNames || {};
+  for (const key of Object.keys(speakerNames)) {
+    if (!(key in normalized)) delete speakerNames[key];
+  }
+  Object.assign(speakerNames, normalized);
   showSpeakerEditor.value = false;
 }
 
@@ -324,15 +332,6 @@ const speakerTurnsColumnLabels = {
   avg_duration_per_turn_seconds: "Avg Duration Per Turn (sec)",
 };
 
-const speakerTurnTimelineRows = computed(() =>
-  transcriptSpeakerTurns.value
-    .map((row) => ({
-      speaker: mapSpeakerLabel(row?.speaker || "Unknown"),
-      time_seconds: Number(row?.start_seconds) || 0,
-    }))
-    .filter((row) => row.time_seconds >= 0)
-);
-
 const utteranceDurationRows = computed(() =>
   transcriptSegments.value
     .map((row) => ({
@@ -553,11 +552,10 @@ const tabs = [
   { id: "transcript", label: "Transcript" },
   { id: "pace", label: "Speaking Pace" },
   { id: "airtime", label: "Speaker Airtime" },
-  { id: "turns", label: "Speaker Turns" },
   { id: "highlights", label: "NER" },
   { id: "words", label: "Words Count" },
   { id: "segments", label: "Speaking Segments" },
-  { id: "silence", label: "Silence / Pause Metrics" },
+  { id: "silence", label: "Silence & Pause" },
   { id: "utterance", label: "Utterance Duration" },
 ];
 
@@ -608,33 +606,30 @@ watch(
       </div>
 
       <template v-if="activeTab === 'transcript'">
-        <div class="panel transcript-search-panel">
+        <section class="transcript-search-panel">
           <div class="panel-heading panel-heading-inline">
             <div class="panel-heading-inline-title">
-              <button class="transcript-editor-toggle" type="button" @click="showSpeakerEditor = !showSpeakerEditor">
-                {{ showSpeakerEditor ? "Close Speaker Labels" : "Edit Speaker Labels" }}
+              <button v-if="!showSpeakerEditor" class="transcript-editor-toggle" type="button" @click="showSpeakerEditor = true">
+                Edit Speaker Labels
               </button>
             </div>
           </div>
-          <input v-model="transcriptSearch" type="text" class="transcript-search-input" placeholder="Search by keyword" />
-          <p v-if="transcriptSearch.trim()" class="field-hint transcript-search-hint">
-            {{ transcriptMatchCount }} match<span v-if="transcriptMatchCount !== 1">es</span> found
-          </p>
-        </div>
-
-        <section class="panel" v-if="showSpeakerEditor">
-          <div class="panel-heading">
-            <h3>Speaker Labels</h3>
+          <div v-if="showSpeakerEditor">
+            <div class="speaker-grid">
+              <label v-for="speaker in speakerKeys" :key="speaker">
+                {{ speaker }}
+                <input v-model="speakerNames[speaker]" type="text" />
+              </label>
+            </div>
+            <div class="action-row">
+              <button class="primary" :disabled="state.loading.speakerLabels" @click="handleSaveSpeakerLabels()">
+                {{ state.loading.speakerLabels ? "Saving..." : "Save" }}
+              </button>
+              <button class="ghost-link-button" type="button" :disabled="state.loading.speakerLabels" @click="handleCancelSpeakerLabels()">
+                Cancel
+              </button>
+            </div>
           </div>
-          <div class="speaker-grid">
-            <label v-for="speaker in speakerKeys" :key="speaker">
-              {{ speaker }}
-              <input v-model="speakerNames[speaker]" type="text" />
-            </label>
-          </div>
-          <button class="primary" :disabled="state.loading.speakerLabels" @click="handleSaveSpeakerLabels()">
-            {{ state.loading.speakerLabels ? "Saving..." : "Save Speaker Labels" }}
-          </button>
         </section>
 
         <section class="panel">
@@ -662,6 +657,10 @@ watch(
               </button>
             </div>
           </div>
+          <input v-model="transcriptSearch" type="text" class="transcript-search-input" placeholder="Search by keyword" />
+          <p v-if="transcriptSearch.trim()" class="field-hint transcript-search-hint">
+            {{ transcriptMatchCount }} match<span v-if="transcriptMatchCount !== 1">es</span> found
+          </p>
           <pre class="markdown-block transcript-block">{{ filteredTranscriptEntries.length ? filteredTranscriptEntries.join("\n\n") : "No matches found." }}</pre>
         </section>
       </template>
@@ -808,9 +807,8 @@ watch(
           </div>
         </div>
 
-        <div class="overview-chart-grid">
+        <div class="overview-chart-grid speaker-airtime-chart-grid">
           <SpeakerShareChartCard title="Pie Chart Per Speaker" :rows="speakerAirtimeRows" />
-          <SpeakerTimelineChartCard title="Timeline Per Speaker" :rows="speakerTimelineRows" />
         </div>
 
         <DataTable
@@ -819,9 +817,11 @@ watch(
           csv-filename="transcript-speaker-airtime.csv"
           :show-toolbar="false"
         />
-      </template>
 
-      <template v-else-if="activeTab === 'turns'">
+        <div class="speaker-airtime-timeline-shell">
+          <SpeakerTimelineChartCard title="Timeline Per Speaker" :rows="speakerTimelineRows" />
+        </div>
+
         <div class="panel-heading panel-heading-inline table-toolbar-panel" v-if="speakerTurnsTableRows.length">
           <div class="panel-heading-inline-title">
             <h3>Speaker Turns</h3>
@@ -840,8 +840,6 @@ watch(
             </button>
           </div>
         </div>
-
-        <SpeakerTurnsTimelineChartCard title="Timeline Of Speaker Changes" :rows="speakerTurnTimelineRows" />
 
         <DataTable
           :rows="speakerTurnsTableRows"
