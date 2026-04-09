@@ -8,6 +8,7 @@ import AnalysisView from "./views/AnalysisView.vue";
 import SmartRecapView from "./views/SmartRecapView.vue";
 import ContentRepurposingView from "./views/ContentRepurposingView.vue";
 import AuthCallbackView from "./views/AuthCallbackView.vue";
+import BetaNoticeView from "./views/BetaNoticeView.vue";
 
 const routes = [
   { path: "/", component: HomeView },
@@ -18,6 +19,7 @@ const routes = [
   { path: "/analysis", component: AnalysisView },
   { path: "/smart-recap", component: SmartRecapView },
   { path: "/content-repurposing", component: ContentRepurposingView },
+  { path: "/beta-info", component: BetaNoticeView },
   { path: "/auth/callback", component: AuthCallbackView },
 ];
 

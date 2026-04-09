@@ -156,6 +156,15 @@ function toggleSidebar() {
         />
 
         <p v-if="state.error" class="error-text">{{ state.error }}</p>
+
+        <div class="sidebar-beta-notice">
+          <p class="sidebar-beta-title">Beta notice</p>
+          <p class="sidebar-beta-copy">
+            This tool is an early-access helper and not an official Livestorm process. Review outputs before relying on
+            them.
+          </p>
+          <RouterLink to="/beta-info" class="sidebar-beta-link">Read more</RouterLink>
+        </div>
       </template>
     </aside>
 
